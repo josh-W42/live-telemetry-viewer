@@ -177,15 +177,43 @@ because each point was a two-element JS array with its own object header. The ri
 hold 2.4M points in **36.6 MB of packed Float64Array**, measured directly — roughly 28x the
 data in a sixth of the space.
 
-### Still outstanding
+### The 10-minute acceptance run
 
-The **10-minute acceptance run has not been completed**. See the measurement note below: the
-automation browser pane keeps being occluded, and a run that cannot schedule animation frames
-measures nothing. The 60-second run is valid and is what the figures above come from.
+Run by Josh in an ordinary browser window, since the automation pane could not stay visible
+long enough. Status **completed** — the full 600 s, never stopped early.
 
-What the long run would add: confirmation that points held plateaus at the ring buffer
-capacity (2.4M) rather than growing, that heap plateaus with it, and that 30+ fps holds with a
-full 10-minute window on screen.
+| | Result | Acceptance criterion |
+|---|---|---|
+| Duration | 600.0 s, `completed` | — |
+| fps | **p50 120, min 116.9** | 30+ |
+| Long tasks | **0** | no multi-second freezes |
+| Points held | **2,399,800** | ~2.4M (10 min at 1 kHz x 4) |
+| Points rendered | 15,016 | — |
+| Heap | 43.8 start, **93.5 peak**, 61.6 end | bounded |
+| Peak main thread | 24.7% | — |
+| Longest single render | 12.3 ms | — |
+| `visibilityLost` | false | — |
+
+**The ring buffer plateaued exactly at capacity.** 2,399,800 held against a theoretical
+2,400,000 — the buffers filled and stopped. That is the bounded-memory claim demonstrated
+rather than argued: the app can now run indefinitely without memory growing.
+
+**Heap plateaued and then fell.** It peaked at 93.5 MB and *ended at 61.6 MB*, lower than its
+peak, as GC reclaimed transient allocations. Mode A needed 211 MB to hold 85,600 points; mode
+B reached 438 MB. Mode C holds **28x mode A's data in under half its memory**.
+
+**0.63% of the data is drawn.** 15,016 rendered from 2,399,800 held. Note that 15,016 is 4 x
+3,754, and 3,754 is twice the chart width in pixels on that machine — a wider window than the
+60-second run above, which produced 7,744 on a narrower one. The relationship holds at both
+widths, which is the point: **the figure tracks the display, not the dataset**.
+
+**One honest wrinkle.** Peak main-thread cost was 24.7%, well above the 2.8% peak of the
+shorter run. The per-render cost is essentially identical between them (12.3 ms vs 13.4 ms),
+so the difference is how *often* a view is applied, not what one costs — that machine's 120 Hz
+display drives the frame loop twice as fast, and it renders about twice as many points per
+view. Neither figure is alarming at a 12 ms render, and fps never dropped below 116.9, but
+the cost is not perfectly flat and should not be described as such. Worth confirming directly
+rather than inferring, by logging applied-views-per-second.
 
 ## Two measurement flaws this work exposed
 
@@ -225,10 +253,21 @@ distinguishes the two, and there is a test for each case.
   range the comparison above uses.
 - Mode C's 60-second run is clean: `completed`, visible throughout, frames scheduled
   throughout, not polled while running.
+- Mode C's 10-minute acceptance run is clean and `completed`, with `visibilityLost: false`.
+  It was run on a **different machine profile** from modes A and B — a 120 Hz display and a
+  wider window. That does not affect the headline conclusions, which rest on points held,
+  points rendered and long tasks, but the fps and busy-percent figures are not directly
+  comparable to the A/B runs and are not used that way above. The matched-point comparison
+  between all three modes comes from the 60-second run on the original machine.
 - **Long runs could not be completed under automation.** The browser pane used to drive these
   measurements is occluded whenever the desktop window's focus moves, which stops frame
-  scheduling and invalidates the run — correctly, but it means the 10-minute acceptance run
-  needs an ordinary browser window left in the foreground rather than the automation pane.
+  scheduling and invalidates the run — correctly, but it means long runs need an ordinary
+  browser window left in the foreground rather than the automation pane.
+
+### Raw results
+
+The acceptance run's summary is committed at
+[`bench-results/m3-worker-10min.json`](bench-results/m3-worker-10min.json).
 
 ### Reproducing these numbers
 
@@ -257,6 +296,10 @@ to look for a faster API doing the same work. Mode B is what that instinct produ
 bought nothing measurable. What worked was changing *what work exists* — bound the points
 drawn by the display rather than the dataset, bound the points held by a fixed allocation, and
 move both off the thread that has to stay responsive.
+
+The end state, in one line: **mode A died after 22 seconds holding 85,600 points in 211 MB.
+Mode C ran 10 minutes holding 2,399,800 points in 93.5 MB at 120 fps with zero long tasks** —
+28x the data, under half the memory, and it stopped growing because it was designed to.
 
 ## Original M3 target
 
