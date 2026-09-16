@@ -1,0 +1,13 @@
+{
+  "mode": "worker",
+  "status": "completed",
+  "reason": null,
+  "durationMs": 600000.5,
+  "timeToBreakMs": null,
+  "fps": { "p50": 120, "p95": 120, "min": 116.9 },
+  "heapMB": { "start": 132.8, "peak": 155.9, "end": 51.3 },
+  "longTasks": { "count": 0, "maxMs": 0 },
+  "points": { "held": 2399800, "rendered": 12888 },
+  "push": { "peakMsPerSec": 273.1, "maxSingleMs": 15.5, "peakBusyPercent": 27.3 },
+  "visibilityLost": false
+}

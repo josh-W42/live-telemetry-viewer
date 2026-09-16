@@ -25,10 +25,44 @@ const anomaliesSlice = createSlice({
   initialState: initialAnomaliesState,
   reducers: {
     setAnomalies(state, action: PayloadAction<Anomaly[]>) {
+      // Keeping the existing array when nothing has changed is not a
+      // micro-optimisation here. The worker resends the whole list twice a
+      // second whether or not anything happened, and a fresh array identity
+      // propagates: the selector returns a new object, the effect watching it
+      // fires, and the renderer runs a full chart.setOption to redraw bands
+      // that are already correct. Anomalies are occasional, so most ticks
+      // carry the same content as the last one.
+      if (sameAnomalies(state.items, action.payload)) return;
       state.items = action.payload;
     },
   },
 });
+
+/**
+ * Whether two lists describe the same anomalies.
+ *
+ * Field by field rather than by id alone, because an open anomaly keeps the
+ * same id while its end and peak move — that is a change the chart has to see.
+ */
+function sameAnomalies(a: readonly Anomaly[], b: readonly Anomaly[]): boolean {
+  if (a.length !== b.length) return false;
+
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!;
+    const y = b[i]!;
+    if (
+      x.id !== y.id ||
+      x.startMs !== y.startMs ||
+      x.endMs !== y.endMs ||
+      x.open !== y.open ||
+      x.peak !== y.peak
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
 
 export const { setAnomalies } = anomaliesSlice.actions;
 export default anomaliesSlice.reducer;

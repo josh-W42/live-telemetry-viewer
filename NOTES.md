@@ -215,6 +215,8 @@ the worker grows a code path that awaits a network call instead of slicing an ar
 
 ## What M6 changed, and one thing it did not
 
+Measured on the finished build: see [The M6 acceptance run](#the-m6-acceptance-run).
+
 **The status bar exists** because the two numbers that carry the whole argument — points held
 and points rendered — were previously visible only in a benchmark report. Watching held climb
 past two million while rendered sits at 5,456 is the design explaining itself.
@@ -477,6 +479,110 @@ view. Neither figure is alarming at a 12 ms render, and fps never dropped below 
 the cost is not perfectly flat and should not be described as such. Worth confirming directly
 rather than inferring, by logging applied-views-per-second.
 
+The same run repeated on the finished build — with M5's rules and M6's status bar in place —
+is [below](#the-m6-acceptance-run). Every acceptance figure matches; the main-thread cost
+moved again, in a way this missing metric would have explained one way or the other.
+
+## The M6 acceptance run
+
+Ten minutes, mode C, on the finished build. Run in an ordinary foreground browser window,
+`visibilityLost: false`, not polled while running, **completed** — never stopped early. Same
+machine profile as the M3 acceptance run (120 Hz display), which is what makes the two
+directly comparable where the A/B runs are not.
+
+| | M3 (2026-09-16) | M6 (2026-09-16) | |
+|---|---|---|---|
+| Status | completed, 600.0 s | completed, 600.0 s | — |
+| fps p50 / p95 / min | 120 / 120 / **116.9** | 120 / 120 / **116.9** | identical |
+| Long tasks | **0** | **0** | identical |
+| Points held | **2,399,800** | **2,399,800** | identical |
+| Points rendered | 15,016 | 12,888 | narrower chart |
+| Peak main thread | 24.7% | **27.3%** | **up** |
+| Peak ms/s | 246.6 | **273.1** | **up** |
+| Longest single render | 12.3 ms | **15.5 ms** | **up** |
+| Heap start / peak / end | 43.8 / 93.5 / 61.6 | 132.8 / 155.9 / 51.3 | **up** |
+
+Raw summaries: [`bench-results/m3-worker-10min.json`](bench-results/m3-worker-10min.json)
+and [`bench-results/m6-worker-10min.json`](bench-results/m6-worker-10min.json).
+
+### Every acceptance criterion is met, identically
+
+fps p50, p95 and min match to the decimal. Zero long tasks. Points held plateaued at exactly
+the same 2,399,800 against a 2,400,000 capacity. The run completed. Nothing the spec asks
+for regressed, and the anomaly rules from M5 and the status bar from M6 are both in the
+measured build.
+
+**Points rendered fell because the chart is narrower, not because anything broke.**
+12,888 is 4 × 2 × 1,611, so the plot was 1,611 px wide; M3's 15,016 is 4 × 2 × 1,877. The
+266 px went to the side column — channel list and anomaly sidebar — which did not exist when
+the M3 run was taken. The figure is still exactly twice the pixel width per channel, now
+confirmed at a third chart width. That is the claim holding, not slipping.
+
+### Main-thread render cost went up, and it is worth saying why that is interesting
+
+Peak went from 24.7% to 27.3% of the main thread, and the longest single render from 12.3 ms
+to 15.5 ms.
+
+The interesting part is the direction. This run drew **14% fewer points** and cost **11%
+more**. Normalised, that is a **29% increase in peak main-thread milliseconds per point
+rendered** (0.0164 → 0.0212 ms/s per point) and a 47% increase in the longest single render
+per point. Two figures derived independently, pointing the same way.
+
+**M5's rule evaluation is not the cause, and this run settles that.** `RenderTimer` wraps
+`chart.setOption` and nothing else, so it cannot see worker-side work at all. Rules run in
+the worker, on ingestion; they add nothing to the main thread by construction, and the
+measurement is consistent with that. That was M5's outstanding regression check, and it
+passes.
+
+But M5 did not only add rule evaluation. It added **drawing** — and two specific things
+entered the timed path between the M3 run and this one:
+
+1. **`setAnomalies` triggered a full `setOption` at 2 Hz whether or not anything changed.**
+   The worker resends the whole anomaly list on every stats message, the store replaced it
+   wholesale, and a fresh array identity propagated through the selector into the effect that
+   redraws the bands. Twice a second, a complete `setOption` to redraw bands that were
+   already correct.
+2. **`markArea` data now rides along on every frame's `setOption`**, and `markAreas()` was
+   being called *inside* the per-channel map — so each frame rebuilt all four channels' band
+   sets four times over, refiltering the anomaly list sixteen times instead of four.
+
+Both are now fixed: the reducer keeps the existing array when the content is unchanged (with
+tests asserting array identity is preserved, and asserting it is *not* preserved while an
+open anomaly's end and peak are still moving), and the band set is built once per frame.
+
+**Neither fix is measured.** They land after the run above and the next run is what would
+show whether they account for the difference. Stating the hypothesis and the numbers that
+prompted it is worth more than a fix presented as a result.
+
+There is also a cheaper explanation available that nothing here rules out: **more views
+applied per second**. `peakMsPerSec` is a peak, not a mean, and the harness does not log how
+often a view was applied — so a run that simply landed more frames in its busiest second
+would show exactly this shape. NOTES.md has flagged applied-views-per-second as worth logging
+directly since the M3 run, and this is the second time its absence has left a question open.
+It should be the next thing the harness records.
+
+**None of this is alarming at the scale involved.** 27.3% peak means the thread was idle
+roughly three quarters of its busiest second, fps never fell below 116.9, and there were no
+long tasks. It is recorded because "the cost is flat" would be a stronger claim than the data
+supports, and the honest version — bounded, small, and up slightly for identifiable reasons —
+is the one that survives being asked about.
+
+### Heap is higher, and still bounded
+
+155.9 MB peak against 93.5, starting from 132.8 rather than 43.8. The bounded-memory claim is
+untouched: it plateaued, and it **ended at 51.3 MB, below where it started**, as GC reclaimed
+transients.
+
+The likely cause of the higher starting point is a change in how the page behaves rather than
+in what it retains. The viewer now streams on load, so by the time the run began there was
+already a worker with full ring buffers; starting a run disposes the renderer and builds a
+fresh one, and the old allocation had not yet been collected. In the M3 run the page held no
+subscription at all until the run started, so it began from a genuinely cold heap.
+
+That is a hypothesis about a `performance.memory` reading, which is a coarse Chromium-only
+estimate to begin with. The figure that carries the claim is points held, and it plateaued
+exactly where it was designed to.
+
 ## SVG vs canvas
 
 `worker-svg` in the benchmarks panel is mode C with `echarts.init(..., { renderer: "svg" })`
@@ -549,8 +655,9 @@ distinguishes the two, and there is a test for each case.
 
 ### Raw results
 
-The acceptance run's summary is committed at
-[`bench-results/m3-worker-10min.json`](bench-results/m3-worker-10min.json).
+Both acceptance runs are committed:
+[`bench-results/m3-worker-10min.json`](bench-results/m3-worker-10min.json) and
+[`bench-results/m6-worker-10min.json`](bench-results/m6-worker-10min.json).
 
 ### Reproducing these numbers
 

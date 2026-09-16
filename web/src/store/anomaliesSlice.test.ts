@@ -45,6 +45,53 @@ describe("setAnomalies", () => {
     expect(state.items).toHaveLength(2);
   });
 
+  /*
+  Identity, not just contents. The worker resends the list twice a second
+  whether or not anything happened; a fresh array each time would propagate
+  through the selector and the effect watching it into a full chart.setOption
+  redrawing bands that are already correct.
+  */
+  it("keeps the same array when an equal list arrives, so nothing downstream re-runs", () => {
+    const first = reducer(initialAnomaliesState, setAnomalies([anomaly({ id: "a" })]));
+    // A distinct array with identical contents, which is what actually arrives:
+    // the worker rebuilds it every stats tick.
+    const second = reducer(first, setAnomalies([anomaly({ id: "a" })]));
+
+    expect(second.items).toBe(first.items);
+    expect(second).toBe(first);
+  });
+
+  // The case that must not be optimised away: an open anomaly keeps its id
+  // while its end and peak move, and the chart has to see that.
+  it("replaces the list when an open anomaly grows", () => {
+    const open = anomaly({ id: "a", open: true, endMs: 1_050, peak: 1150 });
+    const first = reducer(initialAnomaliesState, setAnomalies([open]));
+
+    const grown = reducer(
+      first,
+      setAnomalies([anomaly({ id: "a", open: true, endMs: 1_090, peak: 1181 })]),
+    );
+    expect(grown.items).not.toBe(first.items);
+    expect(grown.items[0]!.endMs).toBe(1_090);
+
+    const closed = reducer(
+      grown,
+      setAnomalies([anomaly({ id: "a", open: false, endMs: 1_090, peak: 1181 })]),
+    );
+    expect(closed.items).not.toBe(grown.items);
+    expect(closed.items[0]!.open).toBe(false);
+  });
+
+  it("replaces the list when an anomaly is added or pruned", () => {
+    const one = reducer(initialAnomaliesState, setAnomalies([anomaly({ id: "a" })]));
+    const two = reducer(one, setAnomalies([anomaly({ id: "a" }), anomaly({ id: "b" })]));
+    expect(two.items).not.toBe(one.items);
+
+    const pruned = reducer(two, setAnomalies([anomaly({ id: "b" })]));
+    expect(pruned.items).not.toBe(two.items);
+    expect(pruned.items.map((a) => a.id)).toEqual(["b"]);
+  });
+
   it("carries an updated open anomaly through without duplicating it", () => {
     const open = anomaly({ id: "a", open: true, endMs: 1_050 });
     const grown = anomaly({ id: "a", open: true, endMs: 1_200 });

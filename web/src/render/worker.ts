@@ -409,8 +409,11 @@ export class WorkerRenderer implements ChartRenderer {
     }
 
     // The view replaces every series, so the bands have to ride along or they
-    // would be wiped on the next frame.
-    const withBands = series.map((s, i) => ({ ...s, ...this.markAreas()[i] }));
+    // would be wiped on the next frame. Built once: markAreas() returns an entry
+    // per channel, so calling it inside the map rebuilt all four every time and
+    // refiltered the anomaly list sixteen times a frame instead of four.
+    const bands = this.markAreas();
+    const withBands = series.map((s, i) => ({ ...s, ...bands[i] }));
     this.timer.measure(() => this.chart!.setOption({ series: withBands }));
   }
 
