@@ -1,7 +1,7 @@
 import * as echarts from "echarts";
 
 import type { Channel, TelemetryBatch } from "../gen/telemetry/v1/telemetry_pb";
-import { baseOption, nsToMs, type ChartRenderer } from "./types";
+import { baseOption, nsToMs, RenderTimer, type ChartRenderer } from "./types";
 
 /**
  * Mode A: the obvious wrong way.
@@ -16,6 +16,10 @@ import { baseOption, nsToMs, type ChartRenderer } from "./types";
  * This exists to be measured, not to be used.
  */
 export class NaiveRenderer implements ChartRenderer {
+  readonly ownsDataSource = false;
+
+  private readonly timer = new RenderTimer();
+
   private chart: echarts.ECharts | null = null;
   private channelIds: string[] = [];
   private series: number[][][] = [];
@@ -44,9 +48,15 @@ export class NaiveRenderer implements ChartRenderer {
     }
 
     // The naive move: the whole dataset, again, on every batch.
-    this.chart.setOption({
-      series: this.series.map((data) => ({ data })),
+    this.timer.measure(() => {
+      this.chart!.setOption({
+        series: this.series.map((data) => ({ data })),
+      });
     });
+  }
+
+  takeRenderStats(): { totalMs: number; maxMs: number } {
+    return this.timer.take();
   }
 
   pointsHeld(): number {

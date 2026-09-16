@@ -9,15 +9,64 @@ import type { Channel, TelemetryBatch } from "../gen/telemetry/v1/telemetry_pb";
  * what is measured, never how.
  */
 export interface ChartRenderer {
+  /**
+   * True when the renderer opens its own telemetry stream, as the worker-backed
+   * one does. The app must not feed such a renderer, or the data would arrive
+   * twice — and routing batches through the main thread is precisely what mode
+   * C exists to avoid.
+   */
+  readonly ownsDataSource: boolean;
+
   init(el: HTMLDivElement, channels: Channel[]): void;
-  /** Called once per incoming batch, roughly 20 times a second. */
+  /** Called once per incoming batch. Ignored when ownsDataSource is true. */
   push(batch: TelemetryBatch): void;
   /** Points currently retained in memory. */
   pointsHeld(): number;
   /** Points actually handed to the chart to draw. */
   pointsRendered(): number;
+
+  /**
+   * Main-thread milliseconds spent rendering since the last call, and the
+   * longest single occurrence. Reading resets the accumulator.
+   *
+   * Each renderer times its own work rather than the app timing it from
+   * outside: M2's renderers are pushed to, while the worker-backed one is
+   * driven by its own animation frame loop, so there is no single call site to
+   * wrap. The metric keeps the same meaning across all three, which is what
+   * keeps the M2 and M3 numbers comparable.
+   */
+  takeRenderStats(): { totalMs: number; maxMs: number };
+
+  /** Stream counters, for renderers that own their own data source. */
+  streamStats?(): { batches: number; gaps: number };
+
   resize(): void;
   dispose(): void;
+}
+
+/** Accumulates main-thread render time. Shared by all three renderers. */
+export class RenderTimer {
+  private totalMs = 0;
+  private maxMs = 0;
+
+  /** Time `fn` and fold the result into the running totals. */
+  measure<T>(fn: () => T): T {
+    const started = performance.now();
+    try {
+      return fn();
+    } finally {
+      const elapsed = performance.now() - started;
+      this.totalMs += elapsed;
+      if (elapsed > this.maxMs) this.maxMs = elapsed;
+    }
+  }
+
+  take(): { totalMs: number; maxMs: number } {
+    const out = { totalMs: this.totalMs, maxMs: this.maxMs };
+    this.totalMs = 0;
+    this.maxMs = 0;
+    return out;
+  }
 }
 
 /**

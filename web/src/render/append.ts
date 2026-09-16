@@ -1,7 +1,7 @@
 import * as echarts from "echarts";
 
 import type { Channel, TelemetryBatch } from "../gen/telemetry/v1/telemetry_pb";
-import { baseOption, nsToMs, type ChartRenderer } from "./types";
+import { baseOption, nsToMs, RenderTimer, type ChartRenderer } from "./types";
 
 /**
  * Mode B: ECharts' own streaming path.
@@ -20,6 +20,10 @@ import { baseOption, nsToMs, type ChartRenderer } from "./types";
  * every batch, because that call is the expensive one.
  */
 export class AppendRenderer implements ChartRenderer {
+  readonly ownsDataSource = false;
+
+  private readonly timer = new RenderTimer();
+
   private chart: echarts.ECharts | null = null;
   private channelIds: string[] = [];
   private held = 0;
@@ -56,11 +60,11 @@ export class AppendRenderer implements ChartRenderer {
         this.lastMs = t;
       }
 
-      this.chart.appendData({ seriesIndex, data });
+      this.timer.measure(() => this.chart!.appendData({ seriesIndex, data }));
       this.held += data.length;
     }
 
-    this.moveAxisIfDue();
+    this.timer.measure(() => this.moveAxisIfDue());
   }
 
   /**
@@ -80,6 +84,10 @@ export class AppendRenderer implements ChartRenderer {
       { xAxis: { min: this.firstMs, max: this.lastMs } },
       { lazyUpdate: true, silent: true },
     );
+  }
+
+  takeRenderStats(): { totalMs: number; maxMs: number } {
+    return this.timer.take();
   }
 
   pointsHeld(): number {

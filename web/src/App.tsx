@@ -12,17 +12,28 @@ import {
 import { downloadReport, summarize, type Summary } from "./bench/report";
 import { AppendRenderer } from "./render/append";
 import { NaiveRenderer } from "./render/naive";
+import { WorkerRenderer } from "./render/worker";
 import type { ChartRenderer } from "./render/types";
 
 type Connection = "connecting" | "streaming" | "error";
 
+const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8080";
+
 const modes: { id: RenderMode; label: string; blurb: string }[] = [
   { id: "naive", label: "A · naive setOption", blurb: "Whole dataset re-sent every batch" },
   { id: "append", label: "B · appendData", blurb: "Only new points, axis moved 1×/s" },
+  { id: "worker", label: "C · worker + LTTB", blurb: "Ring buffers and downsampling off-thread" },
 ];
 
 function makeRenderer(mode: RenderMode): ChartRenderer {
-  return mode === "append" ? new AppendRenderer() : new NaiveRenderer();
+  switch (mode) {
+    case "append":
+      return new AppendRenderer();
+    case "worker":
+      return new WorkerRenderer(API_URL);
+    default:
+      return new NaiveRenderer();
+  }
 }
 
 export function App() {
@@ -41,7 +52,6 @@ export function App() {
   // Stream counters live in refs: at 20 batches/sec, routing them through state
   // would re-render far faster than anyone can read.
   const counters = useRef({ batches: 0, gaps: 0, lastSequence: 0n });
-  const pushStats = useRef({ totalMs: 0, maxMs: 0 });
 
   // Whether incoming batches reach the renderer at all.
   //
@@ -52,16 +62,34 @@ export function App() {
   const feeding = useRef(false);
   const [preview, setPreview] = useState(false);
 
-  // --- stream ------------------------------------------------------------
+  // --- channel metadata ---------------------------------------------------
+  // Cheap unary call, needed by every mode to lay out the chart.
   useEffect(() => {
     const abort = new AbortController();
-
     telemetryClient
       .listChannels({}, { signal: abort.signal })
       .then((res) => setChannels(res.channels))
-      .catch(() => {
-        /* the stream below reports connection problems */
+      .catch((err: unknown) => {
+        if (abort.signal.aborted) return;
+        setConnection("error");
+        setError(ConnectError.from(err).message);
       });
+    return () => abort.abort();
+  }, []);
+
+  // --- main-thread stream (modes A and B only) ----------------------------
+  //
+  // Mode C's worker opens its own stream. If this one stayed open alongside it,
+  // the main thread would still be deserialising twenty batches a second, which
+  // is exactly the cost mode C exists to remove - and the measurement would be
+  // worthless.
+  useEffect(() => {
+    if (mode === "worker") {
+      setConnection("streaming");
+      return;
+    }
+
+    const abort = new AbortController();
 
     void (async () => {
       try {
@@ -75,15 +103,11 @@ export function App() {
           c.batches += 1;
 
           if (!feeding.current) continue;
+          const r = renderer.current;
+          if (!r || r.ownsDataSource) continue;
 
-          // A plain stopwatch around the renderer. This is the measurement that
-          // matters most, and unlike fps it does not depend on the window being
-          // in the foreground.
-          const t0 = performance.now();
-          renderer.current?.push(batch);
-          const elapsed = performance.now() - t0;
-          pushStats.current.totalMs += elapsed;
-          pushStats.current.maxMs = Math.max(pushStats.current.maxMs, elapsed);
+          // Renderers time their own work now, so there is no stopwatch here.
+          r.push(batch);
         }
       } catch (err) {
         if (abort.signal.aborted) return;
@@ -93,7 +117,7 @@ export function App() {
     })();
 
     return () => abort.abort();
-  }, []);
+  }, [mode]);
 
   // --- renderer lifecycle -------------------------------------------------
   useEffect(() => {
@@ -154,20 +178,19 @@ export function App() {
         renderer.current = fresh;
       }
       counters.current = { batches: 0, gaps: 0, lastSequence: 0n };
-      pushStats.current = { totalMs: 0, maxMs: 0 };
+      renderer.current?.takeRenderStats(); // discard anything accumulated while idle
 
       const bench = new BenchRun(
         mode,
         {
           pointsHeld: () => renderer.current?.pointsHeld() ?? 0,
           pointsRendered: () => renderer.current?.pointsRendered() ?? 0,
-          batches: () => counters.current.batches,
-          gaps: () => counters.current.gaps,
-          takePushStats: () => {
-            const out = { ...pushStats.current };
-            pushStats.current = { totalMs: 0, maxMs: 0 };
-            return out;
-          },
+          // A worker-backed renderer counts its own batches, since they never
+          // reach this thread.
+          batches: () => renderer.current?.streamStats?.().batches ?? counters.current.batches,
+          gaps: () => renderer.current?.streamStats?.().gaps ?? counters.current.gaps,
+          takePushStats: () =>
+            renderer.current?.takeRenderStats() ?? { totalMs: 0, maxMs: 0 },
         },
         { ...defaultStopConfig, durationMs },
         (r) => {
