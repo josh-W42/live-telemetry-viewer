@@ -82,39 +82,99 @@ other side: 27 of them, up to 552 ms.
 
 ## Mode B — ECharts `appendData`
 
-**Status: not yet recorded.**
+Only the new points are handed to the chart each batch, so none of mode A's quadratic
+re-serialisation happens. The axis is advanced separately, throttled to once a second,
+because `appendData` cannot move it (see the design note below).
 
-The renderer is implemented (`web/src/render/append.ts`) and runs. Capturing its numbers is
-blocked on an environment constraint rather than on the code: the Browser pane used for
-automation hides itself when the desktop window is not in the foreground, and a hidden pane
-schedules no animation frames and cannot be scripted at all. Runs complete but their results
-cannot be read back, and the visibility guard correctly refuses to report them.
+**Result: it bought essentially nothing.** Main-thread cost tracked mode A almost exactly
+at every point count.
 
-Recording this requires the window kept in the foreground for the duration of the run.
+| Points held | Mode A busy | Mode B busy |
+|---|---|---|
+| 4,000 | 15% | 17% |
+| 20,000 | 28% | 32% |
+| 36,000 | 47% | 52% |
+| 52,000 | 71% | 72% |
+| 60,000 | 77% | 73% |
+| 72,600 | ~164% | 109% |
+| **85,600** | **407%** | **354%** |
 
-### What to capture when it runs
+Mode B ran on to 818,000 points before its stop rule tripped, ending on a **single long
+task of 41.3 seconds**. Heap peaked at 438 MB. But it was already past saturation at the
+same place mode A was: at 85,600 points it was at 354% busy and 1 fps.
 
-The interesting comparison is **not** time-to-failure but cost at a matched point count:
-mode A was saturated at 85,600 points, so mode B's busy percentage at that same figure is
-the number that matters. Time-to-failure is a secondary datum, since it mostly measures
-how long it takes to accumulate points rather than the per-point cost.
+### Why the streaming API did not help
 
-### Design note found while building it
+This was the surprise, and it is the most useful thing M2 produced.
+
+If data *ingestion* were the bottleneck, mode B's cost would be roughly flat — it hands over
+200 new points per batch regardless of how many came before. Instead its cost grew linearly
+with total points, just like mode A. And the once-a-second axis update cannot explain it
+either: that is 1 call in 20, so if it were the only expensive operation, mode B would have
+cost about a twentieth of mode A.
+
+**The bottleneck is drawing, not ingesting.** Rendering a polyline of 85,600 points means
+traversing 85,600 points, every frame, whatever API delivered them. `appendData` optimises
+the half of the problem that was not the problem.
+
+That is the argument for M3 in one sentence: the fix is not a faster way to push points into
+the chart, it is **not drawing most of them**. LTTB attacks *points rendered*; ring buffers
+attack *points held*. A faster ingestion path attacks neither.
+
+### Design note
 
 `appendData` runs a restricted update cycle in which only data may be modified; coordinate
 systems and axes are rebuilt only on a full update. So `appendData` alone **cannot advance a
 scrolling time axis** — it feeds points in while the axis stays put. `AppendRenderer` pairs
-it with a `setOption` carrying only `xAxis.min/max`, throttled to once a second, because
-that call is the expensive one it is trying to avoid. Series data is deliberately excluded
-from that option, since including it would reset what `appendData` accumulated.
+it with a `setOption` carrying only `xAxis.min/max`, throttled to once a second. Series data
+is deliberately excluded from that option, since including it would reset what `appendData`
+accumulated.
+
+### Open question
+
+These runs do not separate `appendData`'s own cost from the axis update's. Isolating it —
+a fixed axis and no `setOption` at all, which is not a usable live chart but is a clean
+measurement — would confirm the drawing-cost explanation directly. The linear growth in
+mode B is already strong evidence, since a per-batch-only cost could not produce it.
+
+## A flaw this exposed in the harness
+
+Mode B was started with a 60-second limit. It ran for roughly **18 minutes**.
+
+Once the main thread saturates, the harness's own one-second `setInterval` is starved, so
+the stop conditions never get evaluated and the run cannot end itself. The sample series
+shows the gap plainly: a sample at t=22 s, then the next at t=1120 s.
+
+The irony is instructive. A watchdog that shares a thread with the thing it is watching
+stops working exactly when it is needed most — which is the same argument for moving the
+data path off the main thread in M3. Worth fixing so future runs terminate honestly;
+the natural home for the watchdog is the worker M3 introduces anyway.
+
+## Measurement conditions, stated honestly
+
+- Both runs were visible throughout (`visibilityLost: false`) and neither was polled while
+  running.
+- Each run had one other idle tab open on the same origin, which Chrome may place in the
+  same renderer process. Both runs were affected similarly, and the effect cannot account
+  for a difference of the size being claimed — but the runs are not pristine.
+- Mode A's failure is a clean measurement. Mode B's *later* samples are distorted by the
+  starvation described above; its readings up to 85,600 points are sound, and that is the
+  range the comparison above uses.
 
 ## M3 target
 
-M3 must beat mode A on the same harness, and the bar is low: survive past 22 seconds and
-85,600 points. The real target is the spec's acceptance criterion — 4 channels at 1 kHz for
-15+ minutes, a 10-minute window visible, 30+ fps, no multi-second freezes. That is roughly
-2.4M points, about 28x what the naive renderer managed before collapsing.
+M3 must beat both modes on the same harness, and the bar is low: both saturated the main
+thread at about 85,600 points, roughly 21 seconds of data. The real target is the spec's
+acceptance criterion — 4 channels at 1 kHz for 15+ minutes, a 10-minute window visible,
+30+ fps, no multi-second freezes. That is roughly 2.4M points, about 28x what either naive
+renderer managed.
 
-The two numbers to watch are **points rendered** (LTTB should hold this near `2 × widthPx`,
-a few thousand, regardless of how many are held) and **main-thread busy time** (which should
-stay flat as points held grows, rather than rising linearly).
+The two numbers to watch:
+
+- **Points rendered** — LTTB should hold this near `2 × widthPx`, a few thousand, no matter
+  how many points are held. Mode B proved this is the one that matters.
+- **Main-thread busy time** — should stay flat as points held grows, instead of climbing
+  linearly. In both M2 modes this crossed 100% at about 85,600 points.
+
+Both M2 modes remain available behind the render-mode toggle, so the comparison can be
+re-run on the same machine at any time rather than trusted from this document.
