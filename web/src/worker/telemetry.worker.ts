@@ -82,6 +82,10 @@ async function start(baseUrl: string, capacity: number, channelIds: string[]): P
   const transport = createConnectTransport({ baseUrl });
   const client = createClient(TelemetryService, transport);
 
+  // Declared out here so the catch can interrogate this run's controller.
+  // A failure before the stream opens leaves it null, which correctly reports.
+  let controller: AbortController | null = null;
+
   try {
     const meta = await client.listChannels({});
     channels = meta.channels
@@ -106,8 +110,15 @@ async function start(baseUrl: string, capacity: number, channelIds: string[]): P
 
     ctx.postMessage({ type: "ready", channels, baseNs });
 
-    abort = new AbortController();
-    const stream = client.streamTelemetry({ channelIds }, { signal: abort.signal });
+    // Held locally as well as module-wide. The catch below has to ask *this*
+    // run's controller whether it was cancelled: `stop()` sets the module-level
+    // `abort` to null, and a restart replaces it with a fresh controller, so by
+    // the time an aborted stream throws, that variable no longer describes the
+    // run that threw.
+    controller = new AbortController();
+    abort = controller;
+
+    const stream = client.streamTelemetry({ channelIds }, { signal: controller.signal });
 
     for await (const batch of stream) {
       if (lastSequence !== 0n && batch.sequence !== lastSequence + 1n) gaps += 1;
@@ -119,7 +130,10 @@ async function start(baseUrl: string, capacity: number, channelIds: string[]): P
       }
     }
   } catch (err) {
-    if (abort?.signal.aborted) return;
+    // A cancelled stream is how stopping works, not a failure. Reporting it
+    // would fill the console with "[canceled]" on every pause, mode switch and
+    // tab change, which is exactly how a real error gets overlooked.
+    if (controller?.signal.aborted) return;
     ctx.postMessage({ type: "error", message: String(err) });
   }
 }
