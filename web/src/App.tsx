@@ -495,8 +495,11 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 4,
     cursor: "pointer",
   },
-  modeBtnOn: { background: "#111", color: "#fff", borderColor: "#111" },
-  btnWarn: { borderColor: "#b45309", color: "#b45309" },
+  // These overlays use the `border` shorthand rather than `borderColor`.
+  // Mixing a shorthand with a longhand for the same property across renders
+  // makes React warn, because removing one leaves the other's value behind.
+  modeBtnOn: { background: "#111", color: "#fff", border: "1px solid #111" },
+  btnWarn: { border: "1px solid #b45309", color: "#b45309" },
   btn: {
     font: "inherit",
     fontSize: "0.75rem",

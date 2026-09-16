@@ -210,12 +210,22 @@ export class WorkerRenderer implements ChartRenderer {
   };
 
   private onPointerUp = (e: PointerEvent): void => {
+    // Only release a capture we actually hold. releasePointerCapture throws
+    // NotFoundError for an unknown pointer id, and this runs from teardown as
+    // well as from a real pointerup.
+    if (this.container?.hasPointerCapture?.(e.pointerId)) {
+      this.container.releasePointerCapture(e.pointerId);
+    }
+    this.endDrag();
+  };
+
+  /** Detach drag listeners and forget the gesture. Safe to call at any time. */
+  private endDrag(): void {
     this.dragLastX = null;
-    this.container?.releasePointerCapture?.(e.pointerId);
     this.container?.removeEventListener("pointermove", this.onPointerMove);
     this.container?.removeEventListener("pointerup", this.onPointerUp);
     this.container?.removeEventListener("pointercancel", this.onPointerUp);
-  };
+  }
 
   private requestView(): void {
     const width = this.chart?.getWidth() ?? 1200;
@@ -323,22 +333,39 @@ export class WorkerRenderer implements ChartRenderer {
     this.chart?.resize();
   }
 
+  /**
+   * Tear everything down.
+   *
+   * The detach step runs inside try/finally because it touches the DOM, and a
+   * throw there previously stranded the rest: the ECharts instance stayed alive
+   * on the container, so the next init found one already there and rendered
+   * nothing, and the worker kept its stream open. Cleanup that can abort
+   * halfway is worse than no cleanup, because it fails silently and compounds
+   * on every mode switch.
+   */
   dispose(): void {
-    this.setActive(false);
+    try {
+      this.setActive(false);
+      this.detachGestures();
+    } finally {
+      this.container = null;
 
+      this.worker?.terminate();
+      this.worker = null;
+
+      this.chart?.dispose();
+      this.chart = null;
+
+      this.held = 0;
+      this.rendered = 0;
+      this.inFlight = 0;
+      this.gestureHandler = null;
+    }
+  }
+
+  private detachGestures(): void {
     this.container?.removeEventListener("wheel", this.onWheel);
     this.container?.removeEventListener("pointerdown", this.onPointerDown);
-    this.onPointerUp({ pointerId: -1 } as PointerEvent);
-    this.container = null;
-
-    this.worker?.terminate();
-    this.worker = null;
-
-    this.chart?.dispose();
-    this.chart = null;
-
-    this.held = 0;
-    this.rendered = 0;
-    this.inFlight = 0;
+    this.endDrag();
   }
 }
