@@ -15,6 +15,7 @@ function sampleAt(t: number, over: Partial<Sample> = {}): Sample {
     batches: 0,
     gaps: 0,
     visible: true,
+    frames: 60,
     pushMsTotal: 0,
     maxPushMs: 0,
     ...over,

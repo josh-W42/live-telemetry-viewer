@@ -27,6 +27,14 @@ export interface Sample {
    * animation frames, so fps reads 0 no matter how healthy the renderer is.
    */
   visible: boolean;
+  /**
+   * Animation frames observed during this sample.
+   *
+   * Distinct from fps because zero frames is qualitatively different from slow
+   * frames: it means nothing was painted at all, which an occluded window
+   * produces even while the Page Visibility API still reports "visible".
+   */
+  frames: number;
   /** Main-thread milliseconds spent inside renderer.push during this second. */
   pushMsTotal: number;
   /** Longest single push during this second. */
@@ -133,6 +141,28 @@ export function evaluateStop(samples: Sample[], cfg: StopConfig): StopDecision {
       stop: true,
       status: "invalid",
       reason: "page was hidden during the run; no animation frames were scheduled",
+    };
+  }
+
+  // Zero frames with an idle main thread means the page is not being painted
+  // at all — an occluded or backgrounded window. `document.hidden` does not
+  // catch this: a pane hidden behind another in a desktop app stays "visible"
+  // to the page while the compositor stops scheduling frames. Reporting that
+  // as an fps failure would put an invented number in the write-up.
+  //
+  // A genuinely frozen renderer also produces no frames, but it is never idle
+  // while doing so, which is what separates the two.
+  const recentFrameless = samples.slice(-cfg.minFpsSamples);
+  if (
+    recentFrameless.length === cfg.minFpsSamples &&
+    recentFrameless.every((s) => s.frames === 0 && s.pushMsTotal < 100 && s.maxLongTaskMs === 0)
+  ) {
+    return {
+      stop: true,
+      status: "invalid",
+      reason:
+        "no animation frames were scheduled while the main thread sat idle; " +
+        "the window is probably occluded",
     };
   }
 
@@ -262,6 +292,7 @@ export class BenchRun {
       batches: this.counters.batches(),
       gaps: this.counters.gaps(),
       visible: typeof document === "undefined" || !document.hidden,
+      frames: this.frameTimes.length,
       pushMsTotal: push.totalMs,
       maxPushMs: push.maxMs,
     };

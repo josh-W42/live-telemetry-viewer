@@ -22,6 +22,7 @@ function sampleAt(t: number, over: Partial<Sample> = {}): Sample {
     batches: 0,
     gaps: 0,
     visible: true,
+    frames: 60,
     pushMsTotal: 0,
     maxPushMs: 0,
     ...over,
@@ -173,6 +174,44 @@ describe("evaluateStop", () => {
         sampleAt(3000),
       ];
       expect(evaluateStop(samples, cfg)).toMatchObject({ stop: true, status: "invalid" });
+    });
+  });
+
+  // An occluded window is worse than a hidden one: the Page Visibility API can
+  // still report "visible" while the compositor schedules no frames at all. The
+  // giveaway is zero frames alongside an idle main thread — a genuinely frozen
+  // renderer also produces no frames, but it is never idle while doing it.
+  describe("when the page is rendering no frames", () => {
+    const occluded = { fps: 0, frames: 0, pushMsTotal: 0, maxPushMs: 0 };
+
+    it("invalidates rather than reporting a false fps failure", () => {
+      const samples = [
+        sampleAt(1000, occluded),
+        sampleAt(2000, occluded),
+        sampleAt(3000, occluded),
+      ];
+
+      const out = evaluateStop(samples, cfg);
+      expect(out).toMatchObject({ stop: true, status: "invalid" });
+      expect(out.reason).toMatch(/frame/i);
+    });
+
+    it("still fails the run when no frames land but the thread is busy", () => {
+      // This is a real freeze: the renderer is saturating the thread, which is
+      // exactly why nothing is being painted.
+      const frozen = { fps: 0, frames: 0, pushMsTotal: 990, maxPushMs: 800 };
+      const samples = [
+        sampleAt(1000, frozen),
+        sampleAt(2000, frozen),
+        sampleAt(3000, frozen),
+      ];
+
+      expect(evaluateStop(samples, cfg)).toMatchObject({ stop: true, status: "failed" });
+    });
+
+    it("tolerates a single frameless sample", () => {
+      const samples = [sampleAt(1000), sampleAt(2000, occluded), sampleAt(3000)];
+      expect(evaluateStop(samples, cfg)).toMatchObject({ stop: false, status: "running" });
     });
   });
 });
