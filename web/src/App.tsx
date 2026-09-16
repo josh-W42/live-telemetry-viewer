@@ -41,6 +41,14 @@ export function App() {
   const [connection, setConnection] = useState<Connection>("connecting");
   const [error, setError] = useState("");
   const [mode, setMode] = useState<RenderMode>("naive");
+
+  // The scripted handle below hands out closures. A caller that grabs
+  // window.__telemetryBench before setMode has re-rendered would otherwise start a
+  // run in the *previous* mode — measuring one renderer while believing it
+  // measured another. Reading the mode from a ref at call time removes the
+  // window in which that can happen.
+  const modeRef = useRef<RenderMode>(mode);
+  modeRef.current = mode;
   const [running, setRunning] = useState(false);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [live, setLive] = useState({ batches: 0, gaps: 0, pointsHeld: 0, fps: 0, heapMB: 0 });
@@ -173,7 +181,7 @@ export function App() {
       // Restart the renderer so each run begins from an empty chart.
       if (chartEl.current && channels.length > 0) {
         renderer.current?.dispose();
-        const fresh = makeRenderer(mode);
+        const fresh = makeRenderer(modeRef.current);
         fresh.init(chartEl.current, channels);
         renderer.current = fresh;
       }
@@ -181,7 +189,7 @@ export function App() {
       renderer.current?.takeRenderStats(); // discard anything accumulated while idle
 
       const bench = new BenchRun(
-        mode,
+        modeRef.current,
         {
           pointsHeld: () => renderer.current?.pointsHeld() ?? 0,
           pointsRendered: () => renderer.current?.pointsRendered() ?? 0,

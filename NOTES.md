@@ -137,18 +137,81 @@ a fixed axis and no `setOption` at all, which is not a usable live chart but is 
 measurement — would confirm the drawing-cost explanation directly. The linear growth in
 mode B is already strong evidence, since a per-batch-only cost could not produce it.
 
-## A flaw this exposed in the harness
+## Mode C — worker, ring buffers and LTTB
 
-Mode B was started with a 60-second limit. It ran for roughly **18 minutes**.
+The stream, the retained samples and the downsampling all live in a worker. The main thread
+receives only an already-reduced view, roughly twice the chart's pixel width per channel.
 
-Once the main thread saturates, the harness's own one-second `setInterval` is starved, so
-the stop conditions never get evaluated and the run cannot end itself. The sample series
-shows the gap plainly: a sample at t=22 s, then the next at t=1120 s.
+**Result: it does not degrade.** A 60-second run completed cleanly with the main thread
+essentially idle.
 
-The irony is instructive. A watchdog that shares a thread with the thing it is watching
-stops working exactly when it is needed most — which is the same argument for moving the
-data path off the main thread in M3. Worth fixing so future runs terminate honestly;
-the natural home for the watchdog is the worker M3 introduces anyway.
+| Points held | Mode A busy | Mode B busy | Mode C busy |
+|---|---|---|---|
+| 4,000 | 15% | 17% | 1.4% |
+| 20,000 | 28% | 32% | ~1% |
+| 36,000 | 47% | 52% | ~1% |
+| 52,000 | 71% | 72% | ~1% |
+| **85,600** | **407%** | **354%** | **~2%** |
+| 238,200 | — (dead at 85,600) | — (dead at 85,600) | **1%** |
+
+At the matched point count where both naive modes were saturated, mode C sat at about 2% of
+the main thread and a full 60 fps — on the order of **200x less main-thread work for the same
+data**.
+
+Run summary: completed, 60.0 s, 238,200 points held, **7,744 rendered**, fps p50 59.7,
+heap 25.1 → 45.5 MB peak, **zero long tasks**, peak 2.8% busy, longest single render 13.4 ms,
+`visibilityLost: false`.
+
+### The one number that matters
+
+**Points rendered was 7,744 and stayed there** — flat from second 11 to second 60 while points
+held grew sixty-fold.
+
+That figure is 4 channels x 1,936, and 1,936 is twice the chart's width in pixels. Points
+rendered is now a function of the display, not of the dataset. Everything else follows from
+that: with the drawing cost pinned, holding more data costs only memory, and the ring buffer
+bounds that too.
+
+Memory tells the same story from the other side. M2 needed 211 MB to hold 85,600 points,
+because each point was a two-element JS array with its own object header. The ring buffers
+hold 2.4M points in **36.6 MB of packed Float64Array**, measured directly — roughly 28x the
+data in a sixth of the space.
+
+### Still outstanding
+
+The **10-minute acceptance run has not been completed**. See the measurement note below: the
+automation browser pane keeps being occluded, and a run that cannot schedule animation frames
+measures nothing. The 60-second run is valid and is what the figures above come from.
+
+What the long run would add: confirmation that points held plateaus at the ring buffer
+capacity (2.4M) rather than growing, that heap plateaus with it, and that 30+ fps holds with a
+full 10-minute window on screen.
+
+## Two measurement flaws this work exposed
+
+**A watchdog cannot stop a frozen main thread — and I initially claimed it could.**
+
+Mode B was given a 60-second limit and ran about 18 minutes: once the thread saturates, the
+harness's one-second `setInterval` is starved and the stop conditions never evaluate. The
+first write-up called this a fixable flaw and proposed moving the watchdog into the worker.
+That was wrong. A worker can *detect* a frozen main thread but cannot *act* on it, because
+acting means running code on the thread that is frozen. The harness already stopped at its
+first opportunity; there was no earlier opportunity to take. The honest statement is that
+wall-clock duration cannot be bounded when the page freezes, and the long-task series is what
+quantifies the freeze afterwards.
+
+**A visible page is not necessarily a rendering page.**
+
+A 10-minute mode C run reported "fps below 10 for 3 consecutive samples" while the main thread
+was 98% idle — 1.8% peak busy, zero long tasks, 8.1 ms max render. No renderer that idle can
+miss a frame budget, so the reading was an artifact.
+
+`document.hidden` stays `false` when a desktop application hides a pane behind another, but
+the compositor stops scheduling animation frames. fps therefore reads 0 while the visibility
+guard sees a perfectly healthy page. Samples now record the **frame count**, and zero frames
+across consecutive samples *with an idle main thread* marks the run `invalid`. A genuinely
+frozen renderer also paints nothing, but it is never idle while doing so — that is what
+distinguishes the two, and there is a test for each case.
 
 ## Measurement conditions, stated honestly
 
@@ -160,8 +223,42 @@ the natural home for the watchdog is the worker M3 introduces anyway.
 - Mode A's failure is a clean measurement. Mode B's *later* samples are distorted by the
   starvation described above; its readings up to 85,600 points are sound, and that is the
   range the comparison above uses.
+- Mode C's 60-second run is clean: `completed`, visible throughout, frames scheduled
+  throughout, not polled while running.
+- **Long runs could not be completed under automation.** The browser pane used to drive these
+  measurements is occluded whenever the desktop window's focus moves, which stops frame
+  scheduling and invalidates the run — correctly, but it means the 10-minute acceptance run
+  needs an ordinary browser window left in the foreground rather than the automation pane.
 
-## M3 target
+### Reproducing these numbers
+
+```
+just server        # terminal 1
+just web           # terminal 2
+```
+
+Open <http://localhost:5173> in a normal browser window, pick a mode, press **Run 10 min**, and
+leave the window in front and untouched. Press **Download JSON** for the full sample series.
+Do not interact with the page while a run is in progress: doing so executes on the very thread
+being measured.
+
+## What this says about the architecture
+
+Three renderers, one harness, one machine:
+
+- **A and B differ by almost nothing.** Swapping the ingestion API for the library's
+  purpose-built streaming path moved the curve by a few percent. The bottleneck was never
+  ingestion.
+- **C differs by two orders of magnitude.** Not because it pushes points faster, but because
+  it stops pushing most of them at all.
+
+The lesson generalises past this project: when a naive implementation is slow, the instinct is
+to look for a faster API doing the same work. Mode B is what that instinct produces, and it
+bought nothing measurable. What worked was changing *what work exists* — bound the points
+drawn by the display rather than the dataset, bound the points held by a fixed allocation, and
+move both off the thread that has to stay responsive.
+
+## Original M3 target
 
 M3 must beat both modes on the same harness, and the bar is low: both saturated the main
 thread at about 85,600 points, roughly 21 seconds of data. The real target is the spec's
