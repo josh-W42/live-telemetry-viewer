@@ -1,0 +1,20 @@
+{
+  "mode": "worker-svg",
+  "status": "completed",
+  "reason": null,
+  "durationMs": 600001,
+  "timeToBreakMs": null,
+  "fps": { "p50": 120, "p95": 120, "min": 93.3 },
+  "heapMB": { "start": 47.4, "peak": 108.5, "end": 56.8 },
+  "longTasks": { "count": 0, "maxMs": 0 },
+  "points": { "held": 2399800, "rendered": 12728 },
+  "push": {
+    "peakMsPerSec": 286.2,
+    "maxSingleMs": 16.6,
+    "peakBusyPercent": 28.6,
+    "rendersAtPeak": 30,
+    "meanMsAtPeak": 9.54,
+    "peakRendersPerSec": 32
+  },
+  "visibilityLost": false
+}
