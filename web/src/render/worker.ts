@@ -57,21 +57,45 @@ export class WorkerRenderer implements ChartRenderer {
     });
     this.worker.onmessage = (e: MessageEvent<WorkerMessage>) => this.onMessage(e.data);
 
-    this.send({
-      type: "start",
-      baseUrl: this.baseUrl,
-      capacity: CAPACITY,
-      channelIds: [],
-    });
-
-    // Counters are cheap and independent of rendering, so they keep updating
-    // even if a view request fails.
-    this.statsTimer = setInterval(() => this.send({ type: "stats" }), 500);
-
-    this.loop();
+    // Deliberately does not start streaming. Nothing is consumed until
+    // setActive(true), so an idle page holds no subscription.
   }
 
   private statsTimer: ReturnType<typeof setInterval> | null = null;
+  private active = false;
+
+  setActive(active: boolean): void {
+    if (active === this.active) return;
+    this.active = active;
+
+    if (active) {
+      this.send({
+        type: "start",
+        baseUrl: this.baseUrl,
+        capacity: CAPACITY,
+        channelIds: [],
+      });
+
+      // Counters are cheap and independent of rendering, so they keep updating
+      // even if a view request fails.
+      this.statsTimer = setInterval(() => this.send({ type: "stats" }), 500);
+      this.loop();
+      return;
+    }
+
+    // Stopping means all three: the stream, the counters, and the frame loop.
+    // Leaving any one running would keep the server pushing, or keep redrawing
+    // a chart nobody is measuring.
+    this.send({ type: "stop" });
+
+    if (this.statsTimer !== null) {
+      clearInterval(this.statsTimer);
+      this.statsTimer = null;
+    }
+    cancelAnimationFrame(this.rafHandle);
+    this.rafHandle = 0;
+    this.inFlight = 0;
+  }
 
   /** Mode C feeds itself; batches never come through here. */
   push(_batch: TelemetryBatch): void {
@@ -191,15 +215,8 @@ export class WorkerRenderer implements ChartRenderer {
   }
 
   dispose(): void {
-    cancelAnimationFrame(this.rafHandle);
-    this.rafHandle = 0;
+    this.setActive(false);
 
-    if (this.statsTimer !== null) {
-      clearInterval(this.statsTimer);
-      this.statsTimer = null;
-    }
-
-    this.send({ type: "stop" });
     this.worker?.terminate();
     this.worker = null;
 

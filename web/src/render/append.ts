@@ -86,6 +86,11 @@ export class AppendRenderer implements ChartRenderer {
     );
   }
 
+  // This renderer does not own a stream; App gates what reaches push().
+  setActive(_active: boolean): void {
+    void _active;
+  }
+
   takeRenderStats(): { totalMs: number; maxMs: number } {
     return this.timer.take();
   }

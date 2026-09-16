@@ -281,6 +281,12 @@ leave the window in front and untouched. Press **Download JSON** for the full sa
 Do not interact with the page while a run is in progress: doing so executes on the very thread
 being measured.
 
+**An idle page holds no subscription.** The chart is blank until a run starts, and the stream
+closes again the moment one ends — the server's subscriber count returns to zero. Tick **live
+preview when idle** to watch the chart outside a run. This is deliberate: a page that keeps a
+stream open while discarding every batch costs the server 4,000 samples a second for nothing,
+and left a worker quietly filling ring buffers long after a run reported `completed`.
+
 ## What this says about the architecture
 
 Three renderers, one harness, one machine:

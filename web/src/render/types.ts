@@ -18,6 +18,18 @@ export interface ChartRenderer {
   readonly ownsDataSource: boolean;
 
   init(el: HTMLDivElement, channels: Channel[]): void;
+
+  /**
+   * Start or stop consuming data.
+   *
+   * Streams are tied to this rather than to the renderer's lifetime. An idle
+   * page has no business holding a subscription open: the server would keep
+   * pushing 4,000 samples a second at a client that is throwing them away, and
+   * a worker-backed renderer would go on filling ring buffers and redrawing
+   * long after a benchmark reported `completed`.
+   */
+  setActive(active: boolean): void;
+
   /** Called once per incoming batch. Ignored when ownsDataSource is true. */
   push(batch: TelemetryBatch): void;
   /** Points currently retained in memory. */

@@ -15,7 +15,7 @@ import { NaiveRenderer } from "./render/naive";
 import { WorkerRenderer } from "./render/worker";
 import type { ChartRenderer } from "./render/types";
 
-type Connection = "connecting" | "streaming" | "error";
+type Connection = "idle" | "connecting" | "streaming" | "error";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8080";
 
@@ -70,6 +70,10 @@ export function App() {
   const feeding = useRef(false);
   const [preview, setPreview] = useState(false);
 
+  // Nothing streams unless something is consuming: a benchmark run, or an
+  // explicitly enabled live preview.
+  const active = running || preview;
+
   // --- channel metadata ---------------------------------------------------
   // Cheap unary call, needed by every mode to lay out the chart.
   useEffect(() => {
@@ -93,7 +97,14 @@ export function App() {
   // worthless.
   useEffect(() => {
     if (mode === "worker") {
-      setConnection("streaming");
+      setConnection(active ? "streaming" : "idle");
+      return;
+    }
+
+    // No subscription while nothing is consuming. Otherwise the server keeps
+    // pushing 4,000 samples a second at a client that discards every one.
+    if (!active) {
+      setConnection("idle");
       return;
     }
 
@@ -125,7 +136,7 @@ export function App() {
     })();
 
     return () => abort.abort();
-  }, [mode]);
+  }, [mode, active]);
 
   // --- renderer lifecycle -------------------------------------------------
   useEffect(() => {
@@ -160,6 +171,13 @@ export function App() {
     return () => clearInterval(id);
   }, []);
 
+  // Renderers that own a stream start and stop with `active`. Declared after
+  // the lifecycle effect above so a mode switch creates the renderer first and
+  // then sets its state.
+  useEffect(() => {
+    renderer.current?.setActive(active);
+  }, [active, mode, channels]);
+
   // Preview follows the checkbox whenever a run is not driving it.
   useEffect(() => {
     if (!running) feeding.current = preview;
@@ -183,6 +201,9 @@ export function App() {
         renderer.current?.dispose();
         const fresh = makeRenderer(modeRef.current);
         fresh.init(chartEl.current, channels);
+        // Activated here rather than waiting for the effect below to fire on
+        // the next render, so the stream is open before the first sample.
+        fresh.setActive(true);
         renderer.current = fresh;
       }
       counters.current = { batches: 0, gaps: 0, lastSequence: 0n };
