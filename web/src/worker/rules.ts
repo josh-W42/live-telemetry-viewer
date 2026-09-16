@@ -168,16 +168,21 @@ function nsToMs(ns: bigint): number {
  * The rules that ship, hardcoded for now (SPEC.md makes a rule-editing form a
  * stretch goal).
  *
- * Both fire against the simulator, deliberately: a rule that never triggers is
- * indistinguishable from a broken one, so each operator is exercised by
- * something observable rather than by unit tests alone.
+ * Every threshold sits above what nominal operation can reach, so each one
+ * detects a fault rather than describing the duty cycle. An earlier set
+ * included "chamber not pressurised", which fired through every idle and
+ * chill-down — about a third of each loop — because an engine that is off is
+ * unpressurised by definition. A rule that alarms on the machine working
+ * correctly is worse than no rule: it teaches the operator to ignore the
+ * sidebar.
+ *
+ * `server/internal/sim/faults_test.go` holds these same thresholds and asserts
+ * that nominal data crosses each for under 2% of a run, and that every one is
+ * reachable by some injected fault. Keep the two in step.
  */
 export const DEFAULT_RULES: Rule[] = [
   {
-    // Steady-state chamber pressure is 1000 psi with 8 psi of drift and sigma
-    // of 9, so 1100 sits about 11 sigma out: unreachable by noise. The
-    // simulator injects a +180 psi spike lasting 30-100ms into every
-    // steady-state phase, which clears it easily.
+    // Steady chamber pressure is 1000 psi, sigma 9. The injected spike is +180.
     id: "overpressure",
     channelId: "chamber_pressure",
     op: ">",
@@ -186,13 +191,46 @@ export const DEFAULT_RULES: Rule[] = [
     label: "Chamber overpressure",
   },
   {
-    // Fires through idle and chill-down, where the chamber sits at ambient
-    // 14.7 psi. Exists so the `<` path is exercised end to end.
-    id: "unpressurised",
-    channelId: "chamber_pressure",
+    // Steady combustion sits at 3200K, sigma 25. The excursion is +450.
+    id: "overtemperature",
+    channelId: "chamber_temp",
+    op: ">",
+    threshold: 3500,
+    minDurationMs: 50,
+    label: "Chamber overtemperature",
+  },
+  {
+    // Nominal vibration peaks near 4.4g once the 120Hz carrier is included, so
+    // 5.0 is clear of it. The 100ms minimum is what distinguishes a sustained
+    // resonance from the carrier itself, which crosses any level 120 times a
+    // second but never holds it.
+    id: "vibration",
+    channelId: "vibration",
+    op: ">",
+    threshold: 5.0,
+    minDurationMs: 100,
+    label: "Excessive vibration",
+  },
+  {
+    // A surge, not a dropout. Flow is zero whenever the engine is off, so a
+    // low-flow rule would fire through every idle and shutdown — the same
+    // mistake as "not pressurised". An overshoot is only ever abnormal.
+    id: "flow_surge",
+    channelId: "fuel_flow",
+    op: ">",
+    threshold: 15,
+    minDurationMs: 50,
+    label: "Fuel flow surge",
+  },
+  {
+    // The one rule worth having on the low side. Chill-down bottoms out at the
+    // cryogenic floor of 95K and nothing in normal operation goes below it, so
+    // 60K is only reachable by a thermocouple dropout or a cryo overshoot.
+    id: "thermocouple",
+    channelId: "chamber_temp",
     op: "<",
-    threshold: 100,
-    minDurationMs: 1000,
-    label: "Chamber not pressurised",
+    threshold: 60,
+    minDurationMs: 50,
+    label: "Thermocouple dropout",
   },
 ];

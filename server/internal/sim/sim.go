@@ -200,17 +200,22 @@ func (s *Simulator) value(channel uint64, phaseName string, p float64, loop, ind
 	switch channel {
 	case chPressure:
 		base, sigma = pressure(phaseName, p)
-		base += s.anomaly(phaseName, p, loop)
 	case chTemp:
 		base, sigma = temperature(phaseName, p)
 	case chVibration:
 		base, sigma = vibration(phaseName, p)
-		// High-frequency content: a 120 Hz sinusoid riding on the level, scaled
-		// by how energetic the phase is. This is what M3's downsampling has to
-		// survive without turning the trace into mush.
-		base += 0.35 * base * math.Sin(2*math.Pi*120*elapsed)
 	case chFuelFlow:
 		base, sigma = fuelFlow(phaseName, p)
+	}
+
+	// Injected faults ride on the nominal signal. See faults.go.
+	base += s.faultOffset(channel, phaseName, p, loop)
+
+	if channel == chVibration {
+		// High-frequency content scales with the level, so a burst shakes
+		// harder as well as higher. This is what M3's downsampling has to
+		// survive without turning the trace into mush.
+		base += 0.35 * base * math.Sin(2*math.Pi*120*elapsed)
 	}
 
 	v := base + sigma*gaussian(s.cfg.Seed, index, channel)
@@ -315,37 +320,6 @@ func fuelFlow(phaseName string, p float64) (base, sigma float64) {
 		return decay(steadyFlow, 0, p), decay(0.2, 0.002, p)
 	}
 	return 0, 0.002
-}
-
-// Anomaly injection. One pressure spike per loop during steady state, its
-// offset and duration derived from (seed, loop) so a given seed always puts it
-// in the same place. M5's rules engine is what eventually catches these.
-const (
-	spikeAmplitudePSI = 180.0
-	spikeMinMs        = 30
-	spikeMaxMs        = 100
-)
-
-// anomaly returns the pressure to add at this point in the sequence.
-func (s *Simulator) anomaly(phaseName string, p float64, loop int64) float64 {
-	if phaseName != PhaseSteady {
-		return 0
-	}
-
-	steadySec := phaseDuration(PhaseSteady).Seconds()
-
-	// Two independent draws from the loop number: where the spike starts and
-	// how long it lasts.
-	h := hash(s.cfg.Seed, loop, 0xA1)
-	startFrac := 0.1 + 0.7*uniform(h) // keep it clear of the phase edges
-	durMs := spikeMinMs + uniform(splitmix64(h))*(spikeMaxMs-spikeMinMs)
-
-	startSec := startFrac * steadySec
-	nowSec := p * steadySec
-	if nowSec < startSec || nowSec >= startSec+durMs/1000 {
-		return 0
-	}
-	return spikeAmplitudePSI
 }
 
 func phaseDuration(name string) time.Duration {
