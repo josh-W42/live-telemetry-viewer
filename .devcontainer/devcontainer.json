@@ -1,0 +1,37 @@
+{
+  "name": "telemetry",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+
+  // Only this repository is mounted. Nothing else on the host is visible.
+  "workspaceFolder": "/workspaces/telemetry",
+
+  "forwardPorts": [8080, 5173],
+  "portsAttributes": {
+    "8080": { "label": "Go API (Connect)" },
+    "5173": { "label": "Vite dev server" }
+  },
+
+  // node_modules and the Go module cache live in named volumes so they are not
+  // written through the host bind mount, which is slow on Windows and would mix
+  // Linux-built binaries into the host checkout.
+  "mounts": [
+    "source=telemetry-node-modules,target=/workspaces/telemetry/web/node_modules,type=volume",
+    "source=telemetry-go-mod,target=/go/pkg/mod,type=volume"
+  ],
+
+  "postCreateCommand": "just install && just gen",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "bufbuild.vscode-buf",
+        "dbaeumer.vscode-eslint"
+      ]
+    }
+  },
+
+  "remoteUser": "root"
+}

@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+server/server
+server/server.exe
+
+# Generated code is deliberately committed (server/gen, web/src/gen) so the repo
+# builds on clone without buf installed, and so the generated API is browsable.
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+
+# Local env overrides
+.env
+.env.local

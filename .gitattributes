@@ -1,0 +1,11 @@
+# Normalize to LF in the repository and on checkout.
+#
+# Without this, Git checks out LF files as CRLF on Windows while buf and the
+# Go/TS plugins always write LF. `just gen-check` would then report drift on
+# every run, and the same commit would differ between a Windows host and the
+# Linux dev container.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary

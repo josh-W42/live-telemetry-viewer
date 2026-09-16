@@ -1,0 +1,33 @@
+version: v2
+
+# Remove previously generated files so a deleted proto leaves nothing behind.
+clean: true
+
+# Managed mode sets file options for us, so telemetry.proto stays free of
+# language-specific boilerplate like go_package.
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: github.com/josh-W42/sift/server/gen
+
+plugins:
+  # Go messages. Invoked through `go tool` so the version comes from the
+  # `tool` directive in server/go.mod, not from whatever is on PATH.
+  - local: [go, -C, server, tool, protoc-gen-go]
+    out: server/gen
+    opt: paths=source_relative
+
+  # Go Connect handlers and clients. Same pinning.
+  - local: [go, -C, server, tool, protoc-gen-connect-go]
+    out: server/gen
+    opt: paths=source_relative
+
+  # TypeScript messages *and* service descriptors. connect-es v2 folded service
+  # codegen into protoc-gen-es, so there is no separate connect plugin.
+  # Invoked via `node <path>` rather than the .bin shim: npm writes a .cmd
+  # wrapper on Windows and an extensionless symlink elsewhere, and this is the
+  # one spelling that works on both. Version is pinned by web/package-lock.json.
+  - local: [node, web/node_modules/@bufbuild/protoc-gen-es/bin/protoc-gen-es]
+    out: web/src/gen
+    opt: target=ts

@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package telemetry.v1;
+
+// TelemetryService streams simulated rocket-engine test-stand data.
+service TelemetryService {
+  // ListChannels returns the channels the simulator produces.
+  rpc ListChannels(ListChannelsRequest) returns (ListChannelsResponse) {}
+
+  // StreamTelemetry streams batched samples until the client disconnects.
+  rpc StreamTelemetry(StreamTelemetryRequest) returns (stream TelemetryBatch) {}
+}
+
+// Channel describes one sensor on the test stand.
+message Channel {
+  // Stable identifier, e.g. "chamber_pressure".
+  string id = 1;
+  // Human-readable name, e.g. "Chamber Pressure".
+  string name = 2;
+  // Unit of the values, e.g. "psi".
+  string unit = 3;
+  // Samples produced per second for this channel.
+  double sample_rate_hz = 4;
+}
+
+message ListChannelsRequest {}
+
+message ListChannelsResponse {
+  repeated Channel channels = 1;
+}
+
+message StreamTelemetryRequest {
+  // Channels to subscribe to. Empty means all channels.
+  repeated string channel_ids = 1;
+}
+
+// ChannelSamples carries one channel's samples as parallel arrays rather than
+// a repeated submessage. proto3 packs these scalars, so the wire format is a
+// single length-delimited block of raw 8-byte values instead of one tag per
+// sample.
+message ChannelSamples {
+  string channel_id = 1;
+  repeated int64 timestamps_ns = 2;
+  repeated double values = 3;
+}
+
+// TelemetryBatch groups every subscribed channel's samples for one flush
+// interval.
+message TelemetryBatch {
+  repeated ChannelSamples channels = 1;
+  // Monotonic counter. Gaps tell the client the server dropped batches for it.
+  uint64 sequence = 2;
+}

@@ -1,0 +1,14 @@
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+  except:
+    # STANDARD wants every response named <Rpc>Response. TelemetryBatch is the
+    # better name: it is the unit the server flushes every 50ms, and that word
+    # carries meaning in client code in a way StreamTelemetryResponse does not.
+    - RPC_RESPONSE_STANDARD_NAME
+breaking:
+  use:
+    - FILE
