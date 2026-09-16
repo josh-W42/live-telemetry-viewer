@@ -2,11 +2,11 @@ import * as echarts from "echarts";
 
 import type { Channel, TelemetryBatch } from "../gen/telemetry/v1/telemetry_pb";
 import type { ViewMessage, WorkerMessage, WorkerRequest } from "../worker/protocol";
+import type { RenderWindow } from "../store/viewSlice";
 import { baseOption, RenderTimer, type ChartRenderer } from "./types";
 
 /** Ten minutes at 1kHz. Sized once; the worker never grows past it. */
 const CAPACITY = 600_000;
-const WINDOW_NS = 10n * 60n * 1_000_000_000n;
 
 /** ~30fps. Faster than this redraws frames nobody sees. */
 const FRAME_INTERVAL_MS = 33;
@@ -38,6 +38,9 @@ export class WorkerRenderer implements ChartRenderer {
   /** Id of the request awaiting a reply, or 0 when idle. */
   private inFlight = 0;
 
+  private window: RenderWindow = { kind: "live", durationMs: 600_000 };
+  private zoomHandler: ((r: { startMs: number; endMs: number }) => void) | null = null;
+
   private held = 0;
   private rendered = 0;
   private batches = 0;
@@ -47,7 +50,34 @@ export class WorkerRenderer implements ChartRenderer {
 
   init(el: HTMLDivElement, channels: Channel[]): void {
     this.chart = echarts.init(el, undefined, { renderer: "canvas" });
-    this.chart.setOption(baseOption(channels));
+    this.chart.setOption({
+      ...baseOption(channels),
+      dataZoom: [
+        {
+          type: "inside",
+          xAxisIndex: 0,
+          // The worker already filters by time. Letting ECharts filter too
+          // would drop points from a series that was downsampled precisely to
+          // fit, leaving gaps at the edges of the view.
+          filterMode: "none",
+          throttle: 100,
+        },
+      ],
+    });
+
+    // ECharts reports the gesture; the store decides what it means. Reading
+    // startValue/endValue gives real axis times, so there is no percentage
+    // arithmetic to get wrong.
+    this.chart.on("dataZoom", () => {
+      const zoom = (this.chart?.getOption() as { dataZoom?: { startValue?: number; endValue?: number }[] })
+        ?.dataZoom?.[0];
+      if (!zoom) return;
+
+      const { startValue, endValue } = zoom;
+      if (typeof startValue !== "number" || typeof endValue !== "number") return;
+
+      this.zoomHandler?.({ startMs: startValue, endMs: endValue });
+    });
 
     this.channelIds = channels.map((c) => c.id);
     this.seriesIndex = new Map(channels.map((c, i) => [c.id, i]));
@@ -109,6 +139,10 @@ export class WorkerRenderer implements ChartRenderer {
   private loop = (): void => {
     this.rafHandle = requestAnimationFrame(this.loop);
 
+    // A pinned window does not move, so re-requesting it would redraw pixels
+    // that are already correct. It is served once by setWindow instead.
+    if (this.window.kind === "pinned") return;
+
     const now = performance.now();
     if (now - this.lastRequestAt < FRAME_INTERVAL_MS) return;
 
@@ -121,20 +155,54 @@ export class WorkerRenderer implements ChartRenderer {
     this.requestView();
   };
 
+  /**
+   * Set the window the chart should show.
+   *
+   * A pinned window is requested once, here, because it does not move. A live
+   * one is left to the frame loop, which recomputes `now` each tick.
+   */
+  setWindow(window: RenderWindow): void {
+    this.window = window;
+    if (!this.active) return;
+
+    if (window.kind === "pinned") {
+      // Nothing will re-request this, so do it now.
+      this.inFlight = 0;
+      this.requestView();
+    }
+  }
+
+  onZoom(handler: (range: { startMs: number; endMs: number }) => void): void {
+    this.zoomHandler = handler;
+  }
+
   private requestView(): void {
-    const endNs = BigInt(Date.now()) * 1_000_000n;
     const width = this.chart?.getWidth() ?? 1200;
+    const { startNs, endNs } = this.bounds();
 
     this.inFlight = this.nextRequestId++;
     this.send({
       type: "view",
       id: this.inFlight,
-      startNs: endNs - WINDOW_NS,
+      startNs,
       endNs,
       // Two points per pixel: enough that the line is pixel-accurate, few
       // enough that the count is bounded by the display, not the dataset.
+      // Narrowing the window does not change this number - it changes how much
+      // detail each point carries, which is why zooming reveals real structure.
       maxPoints: Math.max(2, width * 2),
     });
+  }
+
+  private bounds(): { startNs: bigint; endNs: bigint } {
+    const msToNs = (ms: number) => BigInt(Math.round(ms)) * 1_000_000n;
+
+    if (this.window.kind === "pinned") {
+      return { startNs: msToNs(this.window.startMs), endNs: msToNs(this.window.endMs) };
+    }
+
+    const endNs = BigInt(Date.now()) * 1_000_000n;
+    return { startNs: endNs - BigInt(this.window.durationMs) * 1_000_000n, endNs };
   }
 
   private onMessage(msg: WorkerMessage): void {

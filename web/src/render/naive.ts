@@ -2,6 +2,7 @@ import * as echarts from "echarts";
 
 import type { Channel, TelemetryBatch } from "../gen/telemetry/v1/telemetry_pb";
 import { baseOption, nsToMs, RenderTimer, type ChartRenderer } from "./types";
+import type { RenderWindow } from "../store/viewSlice";
 
 /**
  * Mode A: the obvious wrong way.
@@ -53,6 +54,17 @@ export class NaiveRenderer implements ChartRenderer {
         series: this.series.map((data) => ({ data })),
       });
     });
+  }
+
+  // Baselines are live-only: they render whatever they are fed, in arrival
+  // order, with no notion of a window. Giving them interaction would change
+  // what M2 measured.
+  setWindow(_window: RenderWindow): void {
+    void _window;
+  }
+
+  onZoom(_handler: (range: { startMs: number; endMs: number }) => void): void {
+    void _handler;
   }
 
   // This renderer does not own a stream; App gates what reaches push().

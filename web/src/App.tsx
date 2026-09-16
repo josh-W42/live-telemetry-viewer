@@ -14,6 +14,16 @@ import { AppendRenderer } from "./render/append";
 import { NaiveRenderer } from "./render/naive";
 import { WorkerRenderer } from "./render/worker";
 import type { ChartRenderer } from "./render/types";
+import { useAppDispatch, useAppSelector } from "./store";
+import {
+  jumpToLive,
+  pause,
+  RETENTION_MS,
+  selectRenderWindow,
+  setWindowSize,
+  WINDOW_SIZES,
+  zoomTo,
+} from "./store/viewSlice";
 
 type Connection = "idle" | "connecting" | "streaming" | "error";
 
@@ -69,6 +79,16 @@ export function App() {
   // only during a run, or when preview is deliberately switched on.
   const feeding = useRef(false);
   const [preview, setPreview] = useState(false);
+
+  // --- view window (Redux) ------------------------------------------------
+  //
+  // The only state in the store. Telemetry never passes through here: the
+  // worker holds 2.4M samples and hands the main thread a few thousand
+  // downsampled points that go straight to ECharts.
+  const dispatch = useAppDispatch();
+  const view = useAppSelector((s) => s.view);
+  const renderWindow = selectRenderWindow(view);
+  const isLive = view.window.kind === "live";
 
   // Switching away from the tab must tear the stream down immediately.
   //
@@ -205,6 +225,23 @@ export function App() {
   useEffect(() => {
     renderer.current?.setActive(active);
   }, [active, mode, channels]);
+
+  // Push the window down, and route zoom gestures back up into the store.
+  //
+  // The renderer reports what the user did; the store decides what it means.
+  // That is what makes "zooming while live pauses" a single reducer transition
+  // rather than two effects racing each other.
+  useEffect(() => {
+    const r = renderer.current;
+    if (!r) return;
+
+    r.onZoom(({ startMs, endMs }) => {
+      dispatch(
+        zoomTo({ startMs, endMs, nowMs: Date.now(), retentionMs: RETENTION_MS }),
+      );
+    });
+    r.setWindow(renderWindow);
+  }, [renderWindow, mode, channels, dispatch]);
 
   // Preview follows the checkbox whenever a run is not driving it.
   useEffect(() => {
@@ -346,6 +383,42 @@ export function App() {
         </label>
       </section>
 
+      {/* Interaction is mode C only: the M2 baselines are frozen references
+          whose numbers must stay comparable to what is in NOTES.md. */}
+      {mode === "worker" && (
+        <section style={styles.controls}>
+          <button
+            onClick={() => dispatch(isLive ? pause({ nowMs: Date.now() }) : jumpToLive())}
+            style={{ ...styles.btn, ...(isLive ? {} : styles.btnWarn) }}
+          >
+            {isLive ? "❚❚ Pause" : "▶ Resume"}
+          </button>
+
+          <div style={styles.modes}>
+            {WINDOW_SIZES.map((w) => (
+              <button
+                key={w.ms}
+                onClick={() => dispatch(setWindowSize(w.ms))}
+                style={{
+                  ...styles.modeBtn,
+                  ...(isLive && view.durationMs === w.ms ? styles.modeBtnOn : {}),
+                }}
+              >
+                {w.label}
+              </button>
+            ))}
+          </div>
+
+          <button onClick={() => dispatch(jumpToLive())} disabled={isLive} style={styles.btn}>
+            Jump to live
+          </button>
+
+          <span style={styles.dim}>
+            {isLive ? "following live · scroll to zoom" : "paused · ingestion continues"}
+          </span>
+        </section>
+      )}
+
       <section style={styles.stats}>
         <Stat label="mode" value={mode} />
         <Stat label="fps" value={String(live.fps)} warn={running && live.fps > 0 && live.fps < 20} />
@@ -406,6 +479,7 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: "pointer",
   },
   modeBtnOn: { background: "#111", color: "#fff", borderColor: "#111" },
+  btnWarn: { borderColor: "#b45309", color: "#b45309" },
   btn: {
     font: "inherit",
     fontSize: "0.75rem",

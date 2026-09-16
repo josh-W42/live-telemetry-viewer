@@ -1,3 +1,4 @@
+import type { RenderWindow } from "../store/viewSlice";
 import type { Channel, TelemetryBatch } from "../gen/telemetry/v1/telemetry_pb";
 
 /**
@@ -29,6 +30,26 @@ export interface ChartRenderer {
    * long after a benchmark reported `completed`.
    */
   setActive(active: boolean): void;
+
+  /**
+   * Set the visible time window.
+   *
+   * A `live` window follows the clock and is re-requested each frame. A
+   * `pinned` one does not move, so it is requested once when it changes —
+   * redrawing identical pixels thirty times a second would be pure waste.
+   *
+   * Only the worker-backed renderer honours this; the M2 baselines are
+   * live-only by design, so their measurements stay comparable.
+   */
+  setWindow(window: RenderWindow): void;
+
+  /**
+   * Called when the user zooms or pans, with the range they landed on.
+   *
+   * The renderer reports the gesture rather than acting on it, so the store
+   * stays the single source of truth for what is on screen.
+   */
+  onZoom(handler: (range: { startMs: number; endMs: number }) => void): void;
 
   /** Called once per incoming batch. Ignored when ownsDataSource is true. */
   push(batch: TelemetryBatch): void;
