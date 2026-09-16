@@ -16,7 +16,7 @@ const noCounters = {
   pointsRendered: () => 0,
   batches: () => 0,
   droppedBatches: () => 0,
-  takePushStats: () => ({ totalMs: 0, maxMs: 0 }),
+  takePushStats: () => ({ totalMs: 0, maxMs: 0, count: 0 }),
 };
 
 // A sample with sensible defaults, so each test states only what it cares about.
@@ -35,6 +35,7 @@ function sampleAt(t: number, over: Partial<Sample> = {}): Sample {
     frames: 60,
     pushMsTotal: 0,
     maxPushMs: 0,
+    renders: 0,
     ...over,
   };
 }

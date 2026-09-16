@@ -277,7 +277,8 @@ alongside the results.
   batch, 20 batches per second, 4000 samples per second.
 - **Harness:** `web/src/bench/`. Samples once a second: fps from `requestAnimationFrame`
   intervals, heap from `performance.memory`, freezes from a `longtask` PerformanceObserver,
-  and main-thread time spent inside `renderer.push`.
+  main-thread time spent inside `renderer.push`, and how many renders that time was spread
+  across.
 - **Stop conditions:** 10 minutes, or fps below 10 for three consecutive samples, or a
   single long task over 2000 ms.
 - **Retention:** unbounded in both M2 modes. Growing memory is the phenomenon under test.
@@ -554,12 +555,12 @@ open anomaly's end and peak are still moving), and the band set is built once pe
 show whether they account for the difference. Stating the hypothesis and the numbers that
 prompted it is worth more than a fix presented as a result.
 
-There is also a cheaper explanation available that nothing here rules out: **more views
-applied per second**. `peakMsPerSec` is a peak, not a mean, and the harness does not log how
-often a view was applied — so a run that simply landed more frames in its busiest second
-would show exactly this shape. NOTES.md has flagged applied-views-per-second as worth logging
-directly since the M3 run, and this is the second time its absence has left a question open.
-It should be the next thing the harness records.
+There is also a cheaper explanation available that nothing in the run above rules out: **more
+renders per second**. `peakMsPerSec` is a peak, not a mean, and at the time the harness did
+not record how often a view was applied — so a run that simply landed more renders in its
+busiest second would show exactly this shape.
+
+**The harness now records it.** See [Attributing render cost](#attributing-render-cost).
 
 **None of this is alarming at the scale involved.** 27.3% peak means the thread was idle
 roughly three quarters of its busiest second, fps never fell below 116.9, and there were no
@@ -582,6 +583,49 @@ subscription at all until the run started, so it began from a genuinely cold hea
 That is a hypothesis about a `performance.memory` reading, which is a coarse Chromium-only
 estimate to begin with. The figure that carries the claim is points held, and it plateaued
 exactly where it was designed to.
+
+## Attributing render cost
+
+Having the same question left open twice — M3's "one honest wrinkle" and M6's cost increase —
+was enough. `RenderTimer` now counts renders as well as timing them, so every run reports:
+
+| Figure | Meaning |
+|---|---|
+| `push.rendersAtPeak` | Renders in the busiest second |
+| `push.meanMsAtPeak` | Mean milliseconds per render **in that same second** |
+| `push.peakRendersPerSec` | The most renders any second carried |
+
+All read off one sample rather than three independent maxima, or they would describe three
+unrelated moments and could not be divided into each other. There is a test asserting exactly
+that, and one feeding two runs with identical `pushMsTotal` but different render counts to
+confirm the summary tells them apart.
+
+`Sample.renders` carries the per-second figure, so the full series shows how the rate moved
+across a run rather than only at its peak.
+
+### Two counters, deliberately
+
+`takeRenderStats()` resets what it returns, which is right for a once-a-second sampler and
+wrong for anything else. The status bar also wants a render rate, and if the two shared that
+accumulator, whichever polled first would silently consume the other's data — the harness
+would report a fraction of the work actually done, with nothing to indicate it.
+
+So `RenderTimer` keeps a second, cumulative count that `take()` never touches, exposed as
+`renderCount()`. The status bar differences it; the harness keeps the resetting one. A test
+asserts that taking the stats leaves the lifetime count alone, and that it never decreases,
+so a rate differenced from it cannot come out negative when a renderer is swapped.
+
+### What the number already showed
+
+Live in the viewer, renders/s reads well below the throttle's ceiling. The frame loop asks
+for a view at most every 33 ms — about 30 a second — but holds **only one request open at a
+time**, deliberately, so a worker that has not answered yet is never queued more work. That
+makes renders/s a reading on the round trip as much as on the loop: a value near 30 means the
+throttle is the limit, and a value well under it means the worker is.
+
+That distinction is exactly what the M6 acceptance run could not make. Both interpretations of
+its higher cost — slower renders, or more of them — predict the same `peakMsPerSec`, and
+predict *different* values of `meanMsAtPeak`. The next run will say which.
 
 ## SVG vs canvas
 

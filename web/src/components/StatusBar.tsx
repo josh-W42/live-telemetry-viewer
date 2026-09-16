@@ -16,6 +16,8 @@ export interface StatusBarProps {
   pointsHeld: number;
   pointsRendered: number;
   fps: number;
+  /** Times a second the chart was handed new data. */
+  rendersPerSec: number;
   droppedBatches: number;
   heapMB: number | null;
   /** Bytes the worker's ring buffers occupy. Fixed once allocated. */
@@ -27,6 +29,7 @@ export function StatusBar({
   pointsHeld,
   pointsRendered,
   fps,
+  rendersPerSec,
   droppedBatches,
   heapMB,
   bufferBytes,
@@ -78,6 +81,21 @@ export function StatusBar({
         warn={connection.state === "streaming" && fps > 0 && fps < 20}
       >
         {fps > 0 ? String(Math.round(fps)) : "—"}
+      </Metric>
+
+      <Metric
+        label="renders/s"
+        hint={
+          "How often the chart is handed new data. Not the same as the frame rate " +
+          "beside it: the view loop asks at most about 30 times a second, and holds " +
+          "only one request open at a time, so this also reports how fast the worker " +
+          "answers. A number well below 30 means the round trip is the limit, not the " +
+          "throttle. It is what makes render cost attributable — twice the main-thread " +
+          "time means either slower renders or more of them, and one figure cannot say " +
+          "which."
+        }
+      >
+        {rendersPerSec > 0 ? String(Math.round(rendersPerSec)) : "—"}
       </Metric>
 
       <Metric

@@ -18,6 +18,7 @@ function sampleAt(t: number, over: Partial<Sample> = {}): Sample {
     frames: 60,
     pushMsTotal: 0,
     maxPushMs: 0,
+    renders: 0,
     ...over,
   };
 }
@@ -148,6 +149,66 @@ describe("summarize", () => {
     expect(s.push.peakMsPerSec).toBe(900);
     expect(s.push.maxSingleMs).toBe(140);
     expect(s.push.peakBusyPercent).toBe(90);
+  });
+
+  /*
+  The metric that was missing. Two runs where the busier one costs more tell you
+  nothing on their own: it may have run slower renders, or simply more of them.
+  Reading the count and the mean off the *same* second is what separates them —
+  the M6 acceptance run left that question open because neither existed.
+  */
+  describe("attributing main-thread cost", () => {
+    it("reports the render count and mean cost of the busiest second", () => {
+      const run = runOf([
+        sampleAt(1000, { pushMsTotal: 200, maxPushMs: 20, renders: 30 }),
+        sampleAt(2000, { pushMsTotal: 270, maxPushMs: 15, renders: 30 }),
+        sampleAt(3000, { pushMsTotal: 150, maxPushMs: 12, renders: 18 }),
+      ]);
+
+      const s = summarize(run);
+      expect(s.push.peakMsPerSec).toBe(270);
+      expect(s.push.rendersAtPeak).toBe(30);
+      expect(s.push.meanMsAtPeak).toBe(9);
+    });
+
+    // Same total cost, opposite causes. The summary has to tell them apart.
+    it("distinguishes slower renders from more of them", () => {
+      const slower = summarize(runOf([sampleAt(1000, { pushMsTotal: 300, renders: 20 })]));
+      const busier = summarize(runOf([sampleAt(1000, { pushMsTotal: 300, renders: 60 })]));
+
+      expect(slower.push.peakMsPerSec).toBe(busier.push.peakMsPerSec);
+      expect(slower.push.meanMsAtPeak).toBe(15);
+      expect(busier.push.meanMsAtPeak).toBe(5);
+    });
+
+    // All three figures must come off one second, or they describe three
+    // unrelated moments and cannot be divided into each other.
+    it("takes every peak figure from the same second", () => {
+      const run = runOf([
+        sampleAt(1000, { pushMsTotal: 100, renders: 90 }),
+        sampleAt(2000, { pushMsTotal: 400, renders: 40 }),
+      ]);
+
+      const s = summarize(run);
+      expect(s.push.rendersAtPeak).toBe(40);
+      expect(s.push.meanMsAtPeak).toBe(10);
+      // The busiest second is not the one with the most renders, and the
+      // summary reports both without conflating them.
+      expect(s.push.peakRendersPerSec).toBe(90);
+    });
+
+    it("does not divide by zero in a second that rendered nothing", () => {
+      const s = summarize(runOf([sampleAt(1000, { pushMsTotal: 0, renders: 0 })]));
+      expect(s.push.meanMsAtPeak).toBe(0);
+      expect(s.push.rendersAtPeak).toBe(0);
+    });
+
+    it("survives an empty run", () => {
+      const s = summarize(runOf([]));
+      expect(s.push.rendersAtPeak).toBe(0);
+      expect(s.push.meanMsAtPeak).toBe(0);
+      expect(s.push.peakRendersPerSec).toBe(0);
+    });
   });
 
   it("flags a run that lost visibility so its numbers are not quoted", () => {

@@ -14,8 +14,22 @@ export interface Summary {
   /**
    * How much of the main thread the renderer consumed. peakBusyPercent is the
    * headline: at 100 the thread did nothing but re-render.
+   *
+   * The three `atPeak` figures describe the single busiest second, and exist to
+   * make it attributable. A run that costs more than another either ran more
+   * renders or ran slower ones, and `peakMsPerSec` alone cannot tell you which.
    */
-  push: { peakMsPerSec: number; maxSingleMs: number; peakBusyPercent: number };
+  push: {
+    peakMsPerSec: number;
+    maxSingleMs: number;
+    peakBusyPercent: number;
+    /** Renders in the busiest second. */
+    rendersAtPeak: number;
+    /** Mean milliseconds per render in that second. */
+    meanMsAtPeak: number;
+    /** The most renders any single second carried. */
+    peakRendersPerSec: number;
+  };
   /** True if the page was ever hidden, which makes every fps figure worthless. */
   visibilityLost: boolean;
 }
@@ -51,6 +65,7 @@ function firstBadSample(run: RunResult): number | null {
 export function summarize(run: RunResult): Summary {
   const { samples } = run;
   const last = samples.at(-1);
+  const busiest = busiestSample(samples);
 
   const fpsValues = samples.map((s) => s.fps);
   const heapValues = samples
@@ -89,9 +104,28 @@ export function summarize(run: RunResult): Summary {
       // Samples are one second apart, so ms spent per sample is already a
       // percentage of that second.
       peakBusyPercent: round(Math.min(peakOf(samples, (s) => s.pushMsTotal) / 10, 100)),
+      rendersAtPeak: busiest?.renders ?? 0,
+      meanMsAtPeak:
+        busiest && busiest.renders > 0 ? round2(busiest.pushMsTotal / busiest.renders) : 0,
+      peakRendersPerSec: peakOf(samples, (s) => s.renders),
     },
     visibilityLost: samples.some((s) => !s.visible),
   };
+}
+
+/**
+ * The sample that spent the most main-thread time.
+ *
+ * Deliberately the whole sample rather than the maximum of one field: the point
+ * is to read several figures off the *same* second, so they describe one
+ * moment rather than three unrelated ones.
+ */
+function busiestSample(samples: Sample[]): Sample | null {
+  let worst: Sample | null = null;
+  for (const s of samples) {
+    if (worst === null || s.pushMsTotal > worst.pushMsTotal) worst = s;
+  }
+  return worst;
 }
 
 function peakOf(samples: Sample[], pick: (s: Sample) => number): number {
@@ -100,6 +134,11 @@ function peakOf(samples: Sample[], pick: (s: Sample) => number): number {
 
 function round(n: number): number {
   return Math.round(n * 10) / 10;
+}
+
+/** Two places, for per-render costs where a tenth of a millisecond is coarse. */
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
 }
 
 /** The full run as JSON, for pasting into NOTES.md alongside the summary. */

@@ -87,6 +87,7 @@ export function App() {
     pointsRendered: 0,
     droppedBatches: 0,
     fps: 0,
+    rendersPerSec: 0,
     heapMB: null as number | null,
     bufferBytes: 0,
     perChannel: {} as Record<string, number>,
@@ -297,15 +298,34 @@ export function App() {
     return () => meter.stop();
   }, [active]);
 
+  // Cumulative render count at the previous readout, for differencing.
+  //
+  // Deliberately not `takeRenderStats()`, which resets what it returns: a
+  // status bar calling that would eat the benchmark harness's data and the run
+  // would report a fraction of the work it actually did.
+  const lastRenders = useRef({ count: 0, at: 0 });
+
   // --- live readout -------------------------------------------------------
   useEffect(() => {
     const id = setInterval(() => {
       const r = renderer.current;
+
+      const total = r?.renderCount() ?? 0;
+      const now = performance.now();
+      const prev = lastRenders.current;
+      const elapsedSec = (now - prev.at) / 1000;
+      // A renderer swap restarts the count, which would otherwise read as a
+      // large negative rate.
+      const rendersPerSec =
+        elapsedSec > 0 && total >= prev.count ? (total - prev.count) / elapsedSec : 0;
+      lastRenders.current = { count: total, at: now };
+
       setLive({
         pointsHeld: r?.pointsHeld() ?? 0,
         pointsRendered: r?.pointsRendered() ?? 0,
         droppedBatches: r?.streamStats?.().droppedBatches ?? counters.current.droppedBatches,
         fps: frames.current.fps(),
+        rendersPerSec,
         heapMB: readHeap(),
         bufferBytes: (r as WorkerRenderer | null)?.bufferBytes ?? 0,
         perChannel: r?.heldPerChannel?.() ?? {},
@@ -375,7 +395,7 @@ export function App() {
             renderer.current?.streamStats?.().droppedBatches ??
             counters.current.droppedBatches,
           takePushStats: () =>
-            renderer.current?.takeRenderStats() ?? { totalMs: 0, maxMs: 0 },
+            renderer.current?.takeRenderStats() ?? { totalMs: 0, maxMs: 0, count: 0 },
         },
         { ...defaultStopConfig, durationMs },
         (r) => {
@@ -461,6 +481,7 @@ export function App() {
           pointsHeld={live.pointsHeld}
           pointsRendered={live.pointsRendered}
           fps={live.fps}
+          rendersPerSec={live.rendersPerSec}
           droppedBatches={live.droppedBatches}
           heapMB={live.heapMB}
           bufferBytes={live.bufferBytes}

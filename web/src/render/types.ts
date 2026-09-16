@@ -94,8 +94,10 @@ export interface ChartRenderer {
   pointsRendered(): number;
 
   /**
-   * Main-thread milliseconds spent rendering since the last call, and the
-   * longest single occurrence. Reading resets the accumulator.
+   * Main-thread milliseconds spent rendering since the last call, the longest
+   * single occurrence, and how many renders made it up. Reading resets the
+   * accumulator, so exactly one consumer may call it — the benchmark harness.
+   * A live readout wants `renderCount()` instead.
    *
    * Each renderer times its own work rather than the app timing it from
    * outside: M2's renderers are pushed to, while the worker-backed one is
@@ -103,7 +105,14 @@ export interface ChartRenderer {
    * wrap. The metric keeps the same meaning across all three, which is what
    * keeps the M2 and M3 numbers comparable.
    */
-  takeRenderStats(): { totalMs: number; maxMs: number };
+  takeRenderStats(): RenderStats;
+
+  /**
+   * Renders since this renderer was created. Cumulative and non-destructive, so
+   * a status bar can difference it for a live rate while a benchmark is using
+   * the resetting accumulator above.
+   */
+  renderCount(): number;
 
   /** Stream counters, for renderers that own their own data source. */
   streamStats?(): { batches: number; droppedBatches: number };
@@ -129,10 +138,39 @@ export interface ConnectionStatus {
   message?: string;
 }
 
-/** Accumulates main-thread render time. Shared by all three renderers. */
+/** One reading from a RenderTimer. */
+export interface RenderStats {
+  totalMs: number;
+  maxMs: number;
+  /**
+   * Renders in the period. The denominator for `totalMs`: it is what separates
+   * "each render got slower" from "more renders landed".
+   */
+  count: number;
+}
+
+/**
+ * Accumulates main-thread render time. Shared by all three renderers.
+ *
+ * Counts operations as well as timing them. Without the count, `totalMs` for a
+ * second is ambiguous: twice the cost could mean each render got twice as slow,
+ * or that twice as many landed. That ambiguity was left unresolved by two
+ * separate runs before the counter was added.
+ */
 export class RenderTimer {
   private totalMs = 0;
   private maxMs = 0;
+  private count = 0;
+
+  /**
+   * Renders since construction, never reset.
+   *
+   * Separate from the resettable `count` so a live readout can watch the rate
+   * without disturbing a benchmark run. `take()` is destructive, and two
+   * consumers sharing it would mean whichever called first silently ate the
+   * other's data — the harness would report a fraction of the real work.
+   */
+  private lifetime = 0;
 
   /** Time `fn` and fold the result into the running totals. */
   measure<T>(fn: () => T): T {
@@ -143,14 +181,22 @@ export class RenderTimer {
       const elapsed = performance.now() - started;
       this.totalMs += elapsed;
       if (elapsed > this.maxMs) this.maxMs = elapsed;
+      this.count += 1;
+      this.lifetime += 1;
     }
   }
 
-  take(): { totalMs: number; maxMs: number } {
-    const out = { totalMs: this.totalMs, maxMs: this.maxMs };
+  take(): RenderStats {
+    const out = { totalMs: this.totalMs, maxMs: this.maxMs, count: this.count };
     this.totalMs = 0;
     this.maxMs = 0;
+    this.count = 0;
     return out;
+  }
+
+  /** Cumulative render count. Reading it disturbs nothing. */
+  renderCount(): number {
+    return this.lifetime;
   }
 }
 

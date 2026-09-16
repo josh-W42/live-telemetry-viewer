@@ -25,10 +25,11 @@ Open <http://localhost:5173> and it streams.
 - **Chart** — four channels on a shared time axis, two y-axes because psi/K and
   g/(kg·s⁻¹) differ by orders of magnitude. Scroll to zoom, drag to pan; zooming
   while live pins the window, which is the same state as paused.
-- **Status bar** — connection, points held, points rendered, render fps, dropped
-  batches, heap. Each carries a tooltip explaining what it means. Watching
-  *points held* climb to 2.4M while *points rendered* stays put is the whole
-  architecture in two numbers.
+- **Status bar** — connection, points held, points rendered, render fps,
+  renders/s, dropped batches, heap. Each carries a tooltip explaining what it
+  means. Watching *points held* climb to 2.4M while *points rendered* stays put
+  is the whole architecture in two numbers; *renders/s* against *render fps*
+  shows how much of the display's frame budget the chart never needs.
 - **Channels** — checkboxes. Unticking one stops it being drawn but not being
   recorded, so its history and any anomaly found while it was hidden are there
   when you tick it back on.

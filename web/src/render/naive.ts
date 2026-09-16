@@ -7,6 +7,7 @@ import {
   RenderTimer,
   type ChartRenderer,
   type ConnectionStatus,
+  type RenderStats,
   type ViewGesture,
 } from "./types";
 import type { Anomaly } from "../worker/rules";
@@ -100,8 +101,12 @@ export class NaiveRenderer implements ChartRenderer {
     void _active;
   }
 
-  takeRenderStats(): { totalMs: number; maxMs: number } {
+  takeRenderStats(): RenderStats {
     return this.timer.take();
+  }
+
+  renderCount(): number {
+    return this.timer.renderCount();
   }
 
   pointsHeld(): number {

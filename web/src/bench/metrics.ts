@@ -40,6 +40,15 @@ export interface Sample {
   pushMsTotal: number;
   /** Longest single push during this second. */
   maxPushMs: number;
+  /**
+   * Renders applied during this second.
+   *
+   * The denominator `pushMsTotal` was missing. On its own, a second costing
+   * twice as much is unattributable: each render may have got slower, or twice
+   * as many may have landed. For the worker renderer a render is almost always
+   * a view being applied, since the frame loop is what drives it.
+   */
+  renders: number;
 }
 
 /**
@@ -271,7 +280,7 @@ export interface CounterSource {
    * indirect symptom, and it is unavailable in a hidden tab, whereas this is a
    * plain stopwatch around the work itself.
    */
-  takePushStats(): { totalMs: number; maxMs: number };
+  takePushStats(): { totalMs: number; maxMs: number; count: number };
 }
 
 /**
@@ -360,6 +369,7 @@ export class BenchRun {
       frames: this.frameTimes.length,
       pushMsTotal: push.totalMs,
       maxPushMs: push.maxMs,
+      renders: push.count,
     };
     this.frameTimes = [];
     this.samples.push(sample);

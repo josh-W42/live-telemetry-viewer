@@ -13,6 +13,7 @@ import {
   RenderTimer,
   type ChartRenderer,
   type ConnectionStatus,
+  type RenderStats,
   type ViewGesture,
 } from "./types";
 
@@ -434,8 +435,12 @@ export class WorkerRenderer implements ChartRenderer {
     return this.perChannel;
   }
 
-  takeRenderStats(): { totalMs: number; maxMs: number } {
+  takeRenderStats(): RenderStats {
     return this.timer.take();
+  }
+
+  renderCount(): number {
+    return this.timer.renderCount();
   }
 
   resize(): void {
