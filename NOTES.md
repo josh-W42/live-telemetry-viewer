@@ -157,9 +157,9 @@ Canvas ships. SVG is measurable on the same harness — `worker-svg` in the benc
 mode C with ECharts' SVG backend and nothing else changed — so the comparison is a
 measurement rather than an argument.
 
-**Measured: SVG costs about 6% more per point rendered, and has a worse fps floor** — see
-[SVG vs canvas](#svg-vs-canvas). That is far closer than expected, and the expectation being
-wrong is instructive.
+**Measured: SVG costs about 15% more per render, with a 32% worse worst case and a lower fps
+floor** — see [SVG vs canvas](#svg-vs-canvas). Still far closer than expected, and the
+expectation being wrong is instructive.
 
 The structural difference: canvas draws a polyline into a bitmap and the browser keeps
 nothing per point. SVG creates retained DOM — a `<path>` whose `d` attribute holds every
@@ -176,9 +176,10 @@ pixel — around 15,000 across four channels — regardless of how many are held
 accelerate work that has already been eliminated.
 
 The SVG measurement sharpens this rather than softening it. If the backend conventionally
-considered unsuitable for large datasets lands within 6% of canvas here, the rendering
-backend is simply not where this workload's cost lives — and a GPU would be competing for a
-margin smaller than the one canvas already holds over SVG.
+considered unsuitable for large datasets still finishes ten minutes at 120 fps with no long
+tasks, 15% behind canvas, then the rendering backend is a second-order effect at this
+workload — and a GPU would be competing for a margin only somewhat larger than the one canvas
+already holds over SVG.
 
 WebGL starts to win when that bound stops holding:
 
@@ -559,9 +560,11 @@ Both are now fixed: the reducer keeps the existing array when the content is unc
 tests asserting array identity is preserved, and asserting it is *not* preserved while an
 open anomaly's end and peak are still moving), and the band set is built once per frame.
 
-**Neither fix is measured.** They land after the run above and the next run is what would
-show whether they account for the difference. Stating the hypothesis and the numbers that
-prompted it is worth more than a fix presented as a result.
+**Neither fix is measured here.** They land after the run above. A later run on the fixed
+build settled it: at identical points rendered, peak cost fell 9.0% and the longest render
+18.7%, back to within 0.7% of M3 — [see below](#what-the-counted-runs-settled). The
+hypothesis is recorded in the order it happened, because a fix presented as a result hides
+whether anyone checked.
 
 There is also a cheaper explanation available that nothing in the run above rules out: **more
 renders per second**. `peakMsPerSec` is a peak, not a mean, and at the time the harness did
@@ -623,115 +626,132 @@ So `RenderTimer` keeps a second, cumulative count that `take()` never touches, e
 asserts that taking the stats leaves the lifetime count alone, and that it never decreases,
 so a rate differenced from it cannot come out negative when a renderer is swapped.
 
-### The first counted run
+### What the counted runs settled
 
-The [SVG run](#svg-vs-canvas) below is the first to carry these figures, and they behave:
+Three 10-minute canvas runs, the last two on the current build:
 
-```
-rendersAtPeak      30
-meanMsAtPeak     9.54 ms
-peakMsPerSec    286.2 ms      30 x 9.54 = 286.2
-peakRendersPerSec  32
-```
+| Run | Points rendered | Peak ms/s | **Mean ms/render** | Longest render |
+|---|---|---|---|---|
+| M3 | 15,016 | 246.6 | 8.22 *(inferred)* | 12.3 ms |
+| M6, before the fixes | 12,888 | 273.1 | 9.10 *(inferred)* | 15.5 ms |
+| **M6, after the fixes** | **12,888** | **248.4** | **8.28 (measured)** | **12.6 ms** |
 
-Three things worth reading off that.
+The prediction written here before that last run was: *below 9.10 ms means the two post-run
+fixes account for the increase; 9.10 ms means they do not.*
+
+**Measured: 8.28 ms.** The fixes account for it. At **identical** points rendered — 12,888 in
+both — peak main-thread time fell 9.0% and the longest single render fell 18.7%, putting the
+build back within 0.7% of M3's cost while carrying M5's rules, M5's anomaly bands and M6's
+status bar on top.
+
+So the M6 increase was neither slower rendering inherent to the new features nor more renders
+landing in the busiest second. It was two avoidable pieces of main-thread work: a 2 Hz store
+churn that redrew unchanged anomaly bands, and a band set rebuilt once per channel instead of
+once per frame. Both were identified by reading the numbers, and confirmed by a run designed
+to falsify the explanation.
+
+### The metric behaved, and made the diagnosis possible
+
+`30 renders × 8.28 ms = 248.4 ms/s` exactly, as `30 × 9.54 = 286.2` did for SVG. Every run
+now reconciles.
 
 **The frame loop reaches its ceiling.** `FRAME_INTERVAL_MS` is 33, so the loop asks for a view
-at most about 30 times a second, and 30 is what it got. The round trip is not the limit here —
-the throttle is. (Driving the app from an embedded automation pane gave 4 renders a second
-instead, which is a property of that pane, not of the renderer. The loop holds only one view
-request open at a time, deliberately, so a worker that has not answered yet is never queued
-more work; when the worker is slow, this number says so.)
+at most about 30 times a second, and 30 is what all three runs got. The round trip is not the
+limit on this hardware — the throttle is. (An embedded automation pane gave 4 renders a
+second, which is a property of that pane. The loop holds only one view request open at a time,
+deliberately, so a worker that has not answered is never queued more work; when the worker is
+slow, this number says so.)
 
-**`peakRendersPerSec` is 32 while `rendersAtPeak` is 30**, so the busiest second was *not* the
-second with the most renders. That is exactly the distinction the metric exists to draw, and
-it is why the three peak figures are read off one sample instead of three maxima.
+**`peakRendersPerSec` is 32 while `rendersAtPeak` is 30** in both counted runs, so the busiest
+second was never the second with the most renders. That is exactly the distinction the metric
+exists to draw, and why the three peak figures are read off one sample rather than three
+maxima.
 
-**The M6 canvas question is still open.** Neither canvas run recorded renders — the counter
-landed after both — so there is no `meanMsAtPeak` to compare against. If the canvas runs also
-sat at 30 renders a second, which the same throttle on the same machine makes likely, the
-implied per-render costs are:
+### An observation the counter surfaced: cost per render is nearly flat
 
-| Run | Peak ms/s | Implied mean at 30/s |
-|---|---|---|
-| M3 canvas | 246.6 | 8.22 ms |
-| M6 canvas | 273.1 | 9.10 ms |
-| M6 SVG | 286.2 | **9.54 ms, measured** |
+M3 rendered 15,016 points at an inferred 8.22 ms per render. The post-fix run rendered 12,888
+— 17% fewer — at a measured 8.28 ms. Those are within 0.7% of each other.
 
-Only the last of those is a measurement. The other two rest on an assumption about a figure
-that was not recorded, which is the whole reason the counter now exists — so they are written
-here as inference and should not be quoted as results.
+If that holds, **per-render cost at these counts is dominated by fixed `setOption` overhead**,
+not by the number of points in the series: option merging, coordinate-system rebuild and
+series diffing, all of which happen whether the line has 3,000 vertices or 3,800. It would
+also mean the "per point rendered" normalisation used elsewhere in this document is the wrong
+lens below some threshold, and that the honest comparison between two runs is mean ms per
+render.
 
-**What would settle it: one more 10-minute run in mode `worker`** (canvas), on the current
-build. That build also carries the two fixes made after the M6 acceptance run — the anomaly
-list no longer churning the store at 2 Hz, and the band set built once per frame instead of
-once per channel. If those fixes account for the increase, `meanMsAtPeak` should come in below
-9.10 and near M3's implied 8.22. If it comes in at 9.10, the fixes were not the cause and the
-difference is something still unidentified.
+Stated as an observation, not a finding: one side of it is inferred, and two points do not
+establish a curve. The test is cheap and obvious — vary the window width, which varies
+`maxPoints` directly, and watch whether `meanMsAtPeak` moves with it. That is the next thing
+worth measuring, and it would say where the fixed-cost floor gives way to per-point cost.
 
 ## SVG vs canvas
 
 `worker-svg` is mode C with `echarts.init(..., { renderer: "svg" })` and no other change —
 same worker, same ring buffers, same LTTB, same point budget. One variable moves.
 
-Measured over a full ten minutes rather than the minute originally planned, which makes it
-directly comparable to the acceptance runs rather than a separate class of measurement. Same
-machine, foreground window, `visibilityLost: false`, **completed**.
+Both runs are ten minutes on the same build and the same machine, foreground window,
+`visibilityLost: false`, **completed**, and both record renders, so they can be compared per
+render rather than per second.
 
-| | Canvas (M6) | SVG (M6) | |
+| | Canvas | SVG | |
 |---|---|---|---|
 | Points rendered | 12,888 | 12,728 | matched to 1.2% |
-| Peak main thread | 27.3% | **28.6%** | +4.8% |
-| Peak ms/s | 273.1 | **286.2** | +4.8% |
-| Per point rendered | 21.19 µs/s | **22.49 µs/s** | **+6.1%** |
-| Longest single render | 15.5 ms | **16.6 ms** | +7.1% |
+| Renders at peak | 30 | 30 | identical |
+| **Mean ms per render** | **8.28** | **9.54** | **+15.2%** |
+| Peak ms/s | 248.4 | 286.2 | +15.2% |
+| Longest single render | 12.6 ms | **16.6 ms** | **+31.7%** |
 | fps p50 / p95 | 120 / 120 | 120 / 120 | identical |
-| fps **min** | 116.9 | **93.3** | **−20%** |
+| fps **min** | 117.9 | **93.3** | **−21%** |
 | Long tasks | 0 | 0 | identical |
 | Points held | 2,399,800 | 2,399,800 | identical |
-| Heap peak | 155.9 | 108.5 | see note |
 
-Raw: [`bench-results/m6-worker-svg-10min.json`](bench-results/m6-worker-svg-10min.json).
+Raw: [`m6-worker-canvas-10min-postfix.json`](bench-results/m6-worker-canvas-10min-postfix.json)
+and [`m6-worker-svg-10min.json`](bench-results/m6-worker-svg-10min.json).
 
-The two runs landed within 1.2% of each other on points rendered — 12,728 is 4 × 2 × 1,591 px
-against canvas's 1,611 px — so this is close to a matched comparison without needing to
-normalise. The per-point figure does the normalising anyway.
+Both runs sat at 30 renders in their busiest second, so **mean milliseconds per render is a
+like-for-like comparison** and the 1.2% difference in points rendered does not need
+normalising away. This is the cleanest comparison in this document: one variable, matched
+workload, matched render counts, same machine, same day.
 
-### SVG costs about 6% more, which is far less than expected
+> **Correction.** An earlier version of this section reported SVG as costing about 6% more,
+> comparing it against the canvas run taken *before* the two markArea fixes. The SVG run was
+> taken after them, so that comparison understated canvas by exactly the amount the fixes had
+> recovered. Against the right baseline the gap is 15.2%, and the worst case 31.7% rather
+> than 7.1%. The conclusions below survive the correction; the numbers did not, and the
+> mistake was comparing two runs that differed in two things while describing it as one.
 
-The honest reaction to this number is surprise. The intuition going in — written into this
-document before the run — was that SVG would be dramatically worse, because it "creates
-retained DOM the browser must parse, keep in the layout tree, and re-serialise on every
-update."
+### SVG costs about 15% more, which is still less than expected
 
-That reasoning is sound and the conclusion was wrong, because it assumed **DOM per point**.
+The prediction in this document, written before the run, was that SVG would be *dramatically*
+worse — because it "creates retained DOM the browser must parse, keep in the layout tree, and
+re-serialise on every update." The reasoning was sound and the magnitude was wrong, because it
+assumed **DOM per point**.
+
 ECharts does not do that for a line series. Fifteen thousand points become four `<path>`
 elements with long `d` attributes, not fifteen thousand elements. The per-point work is
-string building rather than node creation, and string building is not that much more
-expensive than writing coordinates into a canvas path. The retained-DOM cost that makes SVG
-famously unsuitable for large datasets is a cost of *element count*, and LTTB plus a polyline
-representation keeps element count at four.
+string building rather than node creation, and string building is not an order of magnitude
+dearer than writing coordinates into a canvas path. The retained-DOM cost that makes SVG
+famously unsuitable for large datasets is a cost of **element count**, and LTTB plus a
+polyline representation keeps element count at four.
 
-**Where SVG does lose is the tail.** fps p50 and p95 are identical at 120; the minimum drops
-from 116.9 to 93.3. Same story from the other side in `maxSingleMs`: 16.6 ms against 15.5 ms,
-a 7.1% worse worst case against a 4.8% worse average. SVG's occasional frame is meaningfully
-more expensive, presumably where the browser reflows or re-parses rather than just repainting.
-93.3 fps is still three times the acceptance target and there were zero long tasks, so this is
-a tail worth noting rather than a problem.
+**SVG loses hardest on the tail.** A 31.7% worse worst case against a 15.2% worse average,
+and an fps floor of 93.3 against 117.9. Its typical frame is somewhat dearer; its occasional
+frame is much dearer, presumably where the browser reflows or re-parses rather than simply
+repainting. 93.3 fps is still three times the acceptance target with zero long tasks, so this
+is a tail worth naming rather than a failure.
 
-**Canvas still ships**, on a 6% margin plus a better floor, and because nothing about the
-result suggests the margin holds as point counts grow. But the more useful conclusion is the
-one about scale: **at this workload the renderer backend barely matters.** Bounding points
-rendered by the display did so much of the work that even the backend conventionally
-considered unsuitable comes within 6%. That is a stronger argument for the architecture than
-a lopsided result would have been — and it sharpens the WebGL discussion above, since a GPU
-would be competing for a margin that canvas already holds over SVG by single digits.
+**Canvas ships**, on a 15% average margin, a 32% worst-case margin, and a better floor. But
+the more useful conclusion is about scale: **at this workload the backend is a second-order
+effect.** Bounding points rendered by the display did so much of the work that the backend
+conventionally considered unsuitable still finishes ten minutes at 120 fps with no long
+tasks. That is a stronger argument for the architecture than a lopsided result would have
+been — and it sharpens the WebGL discussion, since a GPU would be competing for a margin only
+somewhat larger than the one canvas already holds over SVG.
 
-**On heap:** SVG peaked at 108.5 MB against canvas's 155.9, which is not a claim that SVG
-uses less memory. The canvas run started from 132.8 MB and the SVG run from 47.4; both
-plateaued and both ended near 55. `performance.memory` is a coarse Chromium-only estimate and
-these two runs did not start from comparable states, so the comparison is not worth making.
-The figure that carries the memory claim is points held, and both plateaued at 2,399,800.
+**On heap:** SVG peaked at 108.5 MB and canvas at 116.7, from starts of 47.4 and 76.0. That
+is not a memory comparison worth making — `performance.memory` is a coarse Chromium-only
+estimate, and the two runs did not begin from comparable states. The figure carrying the
+memory claim is points held, and both plateaued at 2,399,800.
 
 ## Two measurement flaws this work exposed
 
@@ -776,8 +796,14 @@ distinguishes the two, and there is a test for each case.
   only one here where two runs were taken specifically to be compared, with one variable
   changed between them; it is also the only pair that landed on matched points rendered
   without needing normalising.
-- **Neither canvas run recorded renders per second** — the counter post-dates both — so their
-  per-render costs are inferred, not measured, and are marked as such.
+- **The M3 and pre-fix M6 runs did not record renders per second** — the counter post-dates
+  both — so their per-render costs are inferred at an assumed 30 renders/s, and are marked
+  that way wherever they appear. The two later runs measure it, and both came in at 30, which
+  is what makes the assumption a reasonable one rather than a convenient one.
+- **The SVG and post-fix canvas runs are the only pair here that differ in exactly one thing.**
+  An earlier version of this document compared SVG against the *pre-fix* canvas run, which
+  differed in two, and understated canvas by the size of the fixes. That comparison is
+  corrected in the SVG section, with the error left on the record.
 - Mode C's 10-minute acceptance run is clean and `completed`, with `visibilityLost: false`.
   It was run on a **different machine profile** from modes A and B — a 120 Hz display and a
   wider window. That does not affect the headline conclusions, which rest on points held,
@@ -791,10 +817,11 @@ distinguishes the two, and there is a test for each case.
 
 ### Raw results
 
-All three 10-minute runs are committed:
+All four 10-minute runs are committed:
 [`m3-worker-10min.json`](bench-results/m3-worker-10min.json),
-[`m6-worker-10min.json`](bench-results/m6-worker-10min.json) and
-[`m6-worker-svg-10min.json`](bench-results/m6-worker-svg-10min.json).
+[`m6-worker-10min.json`](bench-results/m6-worker-10min.json) (canvas, before the fixes),
+[`m6-worker-svg-10min.json`](bench-results/m6-worker-svg-10min.json) and
+[`m6-worker-canvas-10min-postfix.json`](bench-results/m6-worker-canvas-10min-postfix.json).
 
 ### Reproducing these numbers
 
@@ -823,13 +850,16 @@ timestamp push per frame.
 
 ## What this says about the architecture
 
-Three renderers, one harness, one machine:
+Four renderers, one harness, one machine:
 
 - **A and B differ by almost nothing.** Swapping the ingestion API for the library's
   purpose-built streaming path moved the curve by a few percent. The bottleneck was never
   ingestion.
 - **C differs by two orders of magnitude.** Not because it pushes points faster, but because
   it stops pushing most of them at all.
+- **C on canvas and C on SVG differ by 15%.** Once points rendered is bounded by the display,
+  even the rendering backend — the thing the question "canvas or SVG?" assumes is decisive —
+  is a second-order effect.
 
 The lesson generalises past this project: when a naive implementation is slow, the instinct is
 to look for a faster API doing the same work. Mode B is what that instinct produces, and it
