@@ -3,10 +3,12 @@ import * as echarts from "echarts";
 import type { Channel, TelemetryBatch } from "../gen/telemetry/v1/telemetry_pb";
 import type { ViewMessage, WorkerMessage, WorkerRequest } from "../worker/protocol";
 import type { RenderWindow } from "../store/viewSlice";
+import type { Anomaly } from "../worker/rules";
 import {
   baseOption,
   GRID_LEFT,
   GRID_RIGHT,
+  colorFor,
   plotFraction,
   RenderTimer,
   type ChartRenderer,
@@ -48,6 +50,8 @@ export class WorkerRenderer implements ChartRenderer {
 
   private window: RenderWindow = { kind: "live", durationMs: 600_000 };
   private gestureHandler: ((g: ViewGesture) => void) | null = null;
+  private anomalyHandler: ((a: Anomaly[]) => void) | null = null;
+  private anomalies: Anomaly[] = [];
   private container: HTMLDivElement | null = null;
   private dragLastX: number | null = null;
 
@@ -168,6 +172,41 @@ export class WorkerRenderer implements ChartRenderer {
     this.gestureHandler = handler;
   }
 
+  onAnomalies(handler: (anomalies: Anomaly[]) => void): void {
+    this.anomalyHandler = handler;
+  }
+
+  /**
+   * Shade the anomalies on the chart.
+   *
+   * Applied on its own rather than waiting for the next view, so a newly
+   * detected anomaly appears immediately even on a pinned window where no view
+   * is being requested.
+   */
+  setAnomalies(anomalies: Anomaly[]): void {
+    this.anomalies = anomalies;
+    if (this.chart) this.timer.measure(() => this.chart!.setOption({ series: this.markAreas() }));
+  }
+
+  /**
+   * markArea entries per series, each tinted with that channel's own colour so
+   * the chart says which sensor tripped without a trip to the sidebar.
+   */
+  private markAreas(): { markArea: unknown }[] {
+    return this.channelIds.map((id) => {
+      const mine = this.anomalies.filter((a) => a.channelId === id);
+      return {
+        markArea: {
+          silent: true,
+          itemStyle: { color: colorFor(id), opacity: 0.18 },
+          // Only an x range: ECharts then spans the full height of the plot,
+          // which reads as "during this period" rather than "at this value".
+          data: mine.map((a) => [{ xAxis: a.startMs }, { xAxis: a.endMs }]),
+        },
+      };
+    });
+  }
+
   /** One notch of wheel zooms by this much; the inverse zooms back out. */
   private static readonly ZOOM_STEP = 0.8;
 
@@ -273,6 +312,7 @@ export class WorkerRenderer implements ChartRenderer {
         this.batches = msg.batches;
         this.gaps = msg.gaps;
         this.bufferBytes = msg.bytes;
+        this.anomalyHandler?.(msg.anomalies);
         break;
       case "view":
         this.applyView(msg);
@@ -310,7 +350,10 @@ export class WorkerRenderer implements ChartRenderer {
       series[index] = { data };
     }
 
-    this.timer.measure(() => this.chart!.setOption({ series }));
+    // The view replaces every series, so the bands have to ride along or they
+    // would be wiped on the next frame.
+    const withBands = series.map((s, i) => ({ ...s, ...this.markAreas()[i] }));
+    this.timer.measure(() => this.chart!.setOption({ series: withBands }));
   }
 
   pointsHeld(): number {
@@ -360,6 +403,8 @@ export class WorkerRenderer implements ChartRenderer {
       this.rendered = 0;
       this.inFlight = 0;
       this.gestureHandler = null;
+      this.anomalyHandler = null;
+      this.anomalies = [];
     }
   }
 

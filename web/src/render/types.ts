@@ -1,4 +1,5 @@
 import type { RenderWindow } from "../store/viewSlice";
+import type { Anomaly } from "../worker/rules";
 import type { Channel, TelemetryBatch } from "../gen/telemetry/v1/telemetry_pb";
 
 /**
@@ -55,6 +56,16 @@ export interface ChartRenderer {
    * that knows where the window actually is.
    */
   onGesture(handler: (gesture: ViewGesture) => void): void;
+
+  /**
+   * Report anomalies the worker detected. The renderer forwards rather than
+   * acting: the store stays the single authority, so the chart and the sidebar
+   * cannot disagree about what was found.
+   */
+  onAnomalies(handler: (anomalies: Anomaly[]) => void): void;
+
+  /** Anomalies to shade on the chart. */
+  setAnomalies(anomalies: Anomaly[]): void;
 
   /** Called once per incoming batch. Ignored when ownsDataSource is true. */
   push(batch: TelemetryBatch): void;

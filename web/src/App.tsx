@@ -24,7 +24,11 @@ import {
   setWindowSize,
   WINDOW_SIZES,
   zoomBy,
+  zoomTo,
 } from "./store/viewSlice";
+import { selectAnomaliesNewestFirst, setAnomalies } from "./store/anomaliesSlice";
+import type { Anomaly } from "./worker/rules";
+import { colorFor } from "./render/types";
 
 type Connection = "idle" | "connecting" | "streaming" | "error";
 
@@ -90,6 +94,9 @@ export function App() {
   const view = useAppSelector((s) => s.view);
   const renderWindow = selectRenderWindow(view);
   const isLive = view.window.kind === "live";
+  const anomaliesState = useAppSelector((s) => s.anomalies);
+  const anomalies = anomaliesState.items;
+  const anomalyList = selectAnomaliesNewestFirst(anomaliesState);
 
   // Switching away from the tab must tear the stream down immediately.
   //
@@ -244,8 +251,32 @@ export function App() {
           : panBy({ ...at, fraction: g.fraction }),
       );
     });
+    r.onAnomalies((list) => dispatch(setAnomalies(list)));
     r.setWindow(renderWindow);
   }, [renderWindow, mode, channels, dispatch]);
+
+  // Anomalies make the same round trip as the window: the worker reports them,
+  // the store owns them, and the renderer draws whatever the store holds. That
+  // is what keeps the sidebar and the chart from ever disagreeing.
+  useEffect(() => {
+    renderer.current?.setAnomalies(anomalies);
+  }, [anomalies, mode, channels]);
+
+  /** Jump the view to an anomaly, padded so a 30ms spike lands in context. */
+  const showAnomaly = useCallback(
+    (a: Anomaly) => {
+      const pad = Math.max((a.endMs - a.startMs) * 0.2, 200);
+      dispatch(
+        zoomTo({
+          startMs: a.startMs - pad,
+          endMs: a.endMs + pad,
+          nowMs: Date.now(),
+          retentionMs: RETENTION_MS,
+        }),
+      );
+    },
+    [dispatch],
+  );
 
   // Preview follows the checkbox whenever a run is not driving it.
   useEffect(() => {
@@ -445,7 +476,39 @@ export function App() {
         <Stat label="gaps" value={String(live.gaps)} warn={live.gaps > 0} />
       </section>
 
-      <div ref={chartEl} style={styles.chart} />
+      <div style={styles.chartRow}>
+        <div ref={chartEl} style={styles.chart} />
+
+        {mode === "worker" && (
+          <aside style={styles.sidebar}>
+            <div style={styles.statLabel}>anomalies ({anomalyList.length})</div>
+
+            {anomalyList.length === 0 ? (
+              <p style={styles.dim}>
+                none yet — the rig injects a pressure spike into every steady-state phase
+              </p>
+            ) : (
+              <ul style={styles.anomalyList}>
+                {anomalyList.map((a) => (
+                  <li key={a.id}>
+                    <button onClick={() => showAnomaly(a)} style={styles.anomalyBtn}>
+                      <span style={{ ...styles.swatch, background: colorFor(a.channelId) }} />
+                      <span style={styles.anomalyLabel}>
+                        {a.label}
+                        {a.open && <em style={styles.ongoing}> ongoing</em>}
+                      </span>
+                      <span style={styles.dim}>
+                        {new Date(a.startMs).toLocaleTimeString()} ·{" "}
+                        {Math.round(a.endMs - a.startMs)} ms · peak {a.peak.toFixed(1)}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </aside>
+        )}
+      </div>
 
       {summary && (
         <section style={styles.summary}>
@@ -518,7 +581,47 @@ const styles: Record<string, React.CSSProperties> = {
   stat: { border: "1px solid #e5e5e5", borderRadius: 6, padding: "0.35rem 0.6rem" },
   statLabel: { fontSize: "0.65rem", textTransform: "uppercase", color: "#666" },
   statValue: { fontSize: "1rem", fontVariantNumeric: "tabular-nums" },
-  chart: { width: "100%", height: "26rem", border: "1px solid #e5e5e5", borderRadius: 6 },
+  chartRow: { display: "flex", gap: "0.75rem", alignItems: "stretch", flexWrap: "wrap" },
+  chart: {
+    flex: "1 1 32rem",
+    minWidth: "20rem",
+    height: "26rem",
+    border: "1px solid #e5e5e5",
+    borderRadius: 6,
+  },
+  sidebar: {
+    flex: "0 1 18rem",
+    minWidth: "14rem",
+    height: "26rem",
+    overflowY: "auto",
+    border: "1px solid #e5e5e5",
+    borderRadius: 6,
+    padding: "0.5rem 0.6rem",
+  },
+  anomalyList: {
+    listStyle: "none",
+    margin: "0.4rem 0 0",
+    padding: 0,
+    display: "grid",
+    gap: "0.3rem",
+  },
+  anomalyBtn: {
+    font: "inherit",
+    fontSize: "0.72rem",
+    textAlign: "left",
+    width: "100%",
+    display: "grid",
+    gridTemplateColumns: "auto 1fr",
+    columnGap: "0.4rem",
+    padding: "0.35rem 0.4rem",
+    border: "1px solid #e5e5e5",
+    borderRadius: 4,
+    background: "#fff",
+    cursor: "pointer",
+  },
+  swatch: { width: 6, borderRadius: 2, gridRow: "1 / span 2" },
+  anomalyLabel: { fontWeight: 600 },
+  ongoing: { color: "#b45309", fontWeight: 400 },
   summary: { marginTop: "0.75rem", fontSize: "0.75rem" },
   pre: { background: "#fafafa", padding: "0.6rem", borderRadius: 6, overflowX: "auto" },
   dim: { color: "#666", fontSize: "0.8rem" },

@@ -8,6 +8,7 @@ import {
   type ChartRenderer,
   type ViewGesture,
 } from "./types";
+import type { Anomaly } from "../worker/rules";
 import type { RenderWindow } from "../store/viewSlice";
 
 /**
@@ -71,6 +72,15 @@ export class NaiveRenderer implements ChartRenderer {
 
   onGesture(_handler: (gesture: ViewGesture) => void): void {
     void _handler;
+  }
+
+  // No worker, so nothing detects and nothing to draw.
+  onAnomalies(_handler: (anomalies: Anomaly[]) => void): void {
+    void _handler;
+  }
+
+  setAnomalies(_anomalies: Anomaly[]): void {
+    void _anomalies;
   }
 
   // This renderer does not own a stream; App gates what reaches push().

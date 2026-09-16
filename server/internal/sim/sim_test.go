@@ -328,3 +328,53 @@ func TestAnomalyLocationIsReproducible(t *testing.T) {
 		}
 	}
 }
+
+// Noise is specified per phase, but a ramp's base starts near zero while its
+// sigma is sized for the fully-developed signal. That made the noise larger
+// than the signal early in ignition, and the non-negative clamp turned every
+// such draw into an exact zero — a burst of apparent sensor dropout at the
+// moment of ignition. Surfaced by M5, whose "chamber not pressurised" anomaly
+// reported a peak of 0.0 psi.
+func TestRampNoiseNeverClampsToZero(t *testing.T) {
+	s := newSim(23)
+
+	zeros := map[string]int{}
+	for _, ch := range s.Range(0, loopSamples()) {
+		// Fuel flow is genuinely zero at idle: a closed valve reads nothing.
+		if ch.ChannelID == "fuel_flow" {
+			continue
+		}
+		for i, v := range ch.Values {
+			if v == 0 {
+				zeros[ch.ChannelID]++
+				if zeros[ch.ChannelID] == 1 {
+					t.Errorf("%s reads exactly 0 at index %d (phase %q): noise exceeded the signal and was clamped",
+						ch.ChannelID, i, s.PhaseAt(int64(i)))
+				}
+			}
+		}
+	}
+
+	for id, n := range zeros {
+		t.Logf("%s: %d clamped samples in one loop", id, n)
+	}
+}
+
+func TestNoiseScalesWithTheSignalDuringIgnition(t *testing.T) {
+	s := newSim(23)
+
+	start := findIndexInPhase(t, s, "ignition")
+	// Sample the first tenth of the ignition ramp, where the base is lowest.
+	early := s.Range(start-2000, start-1500)
+
+	for _, ch := range early {
+		if ch.ChannelID != "chamber_pressure" {
+			continue
+		}
+		for _, v := range ch.Values {
+			if v <= 0 {
+				t.Fatalf("chamber_pressure hit %v early in ignition; noise should shrink with the base", v)
+			}
+		}
+	}
+}

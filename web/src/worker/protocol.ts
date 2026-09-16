@@ -5,6 +5,8 @@
  * natively, so there is no string encoding to get wrong.
  */
 
+import type { Anomaly } from "./rules";
+
 export interface ChannelMeta {
   id: string;
   name: string;
@@ -87,6 +89,12 @@ export interface StatsMessage {
   bytes: number;
   batches: number;
   gaps: number;
+  /**
+   * Every anomaly still inside the retained window, sent whole rather than as
+   * deltas. The list is tiny and an open anomaly keeps growing, so replacing
+   * wholesale is both cheaper and impossible to desynchronise.
+   */
+  anomalies: Anomaly[];
 }
 
 export interface ErrorMessage {

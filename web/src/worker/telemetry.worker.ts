@@ -24,6 +24,7 @@ import type {
   WorkerRequest,
 } from "./protocol";
 import { RingBuffer } from "./ringbuffer";
+import { DEFAULT_RULES, RuleEvaluator } from "./rules";
 
 const ctx = self as DedicatedWorkerGlobalScope;
 
@@ -31,6 +32,11 @@ let buffers = new Map<string, RingBuffer>();
 let channels: ChannelMeta[] = [];
 let baseNs = 0n;
 let abort: AbortController | null = null;
+
+// Rules run on ingestion, so they see every sample - including the 99%+ that
+// LTTB drops before drawing, and everything that arrives while paused.
+let evaluator = new RuleEvaluator(DEFAULT_RULES);
+let retentionMs = 600_000;
 
 let batches = 0;
 let gaps = 0;
@@ -73,7 +79,16 @@ function reportStats(): void {
     bytes += buf.byteLength;
   }
 
-  ctx.postMessage({ type: "stats", pointsHeld, perChannel, bytes, batches, gaps });
+  const nowNs = BigInt(Date.now()) * 1_000_000n;
+  ctx.postMessage({
+    type: "stats",
+    pointsHeld,
+    perChannel,
+    bytes,
+    batches,
+    gaps,
+    anomalies: evaluator.anomalies(nowNs, retentionMs),
+  });
 }
 
 async function start(baseUrl: string, capacity: number, channelIds: string[]): Promise<void> {
@@ -104,6 +119,13 @@ async function start(baseUrl: string, capacity: number, channelIds: string[]): P
 
     buffers = new Map(channels.map((c) => [c.id, new RingBuffer(capacity, baseNs)]));
 
+    // A fresh run means a fresh buffer, so past anomalies point at samples that
+    // no longer exist.
+    evaluator = new RuleEvaluator(DEFAULT_RULES);
+    // Retention is however long the ring buffer holds at this rate; anomalies
+    // are pruned against the same horizon the samples are.
+    retentionMs = (capacity / (channels[0]?.sampleRateHz ?? 1000)) * 1000;
+
     batches = 0;
     gaps = 0;
     lastSequence = 0n;
@@ -127,6 +149,7 @@ async function start(baseUrl: string, capacity: number, channelIds: string[]): P
 
       for (const ch of batch.channels) {
         buffers.get(ch.channelId)?.push(ch.timestampsNs, ch.values);
+        evaluator.push(ch.channelId, ch.timestampsNs, Float64Array.from(ch.values));
       }
     }
   } catch (err) {

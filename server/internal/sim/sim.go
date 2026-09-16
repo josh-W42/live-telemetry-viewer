@@ -257,12 +257,12 @@ func pressure(phaseName string, p float64) (base, sigma float64) {
 	case PhaseIdle, PhaseChillDown:
 		return ambientPSI, 0.4
 	case PhaseIgnition:
-		return lerp(ambientPSI, chamberPSI, p), 12
+		return lerp(ambientPSI, chamberPSI, p), lerp(0.4, 12, p)
 	case PhaseSteady:
 		// Slow drift so the plateau is not perfectly flat.
 		return chamberPSI + 8*math.Sin(2*math.Pi*p*3), 9
 	case PhaseShutdown:
-		return decay(chamberPSI, ambientPSI, p), 6
+		return decay(chamberPSI, ambientPSI, p), decay(6, 0.4, p)
 	}
 	return ambientPSI, 0.4
 }
@@ -275,11 +275,11 @@ func temperature(phaseName string, p float64) (base, sigma float64) {
 		// Cryogenic propellant cools the chamber well below ambient.
 		return lerp(ambientK, cryoK, p), 2
 	case PhaseIgnition:
-		return lerp(cryoK, combustionK, p), 40
+		return lerp(cryoK, combustionK, p), lerp(2, 40, p)
 	case PhaseSteady:
 		return combustionK, 25
 	case PhaseShutdown:
-		return decay(combustionK, ambientK, p), 30
+		return decay(combustionK, ambientK, p), decay(30, 0.8, p)
 	}
 	return ambientK, 0.8
 }
@@ -287,15 +287,15 @@ func temperature(phaseName string, p float64) (base, sigma float64) {
 func vibration(phaseName string, p float64) (base, sigma float64) {
 	switch phaseName {
 	case PhaseIdle:
-		return 0.02, 0.005
+		return 0.02, 0.002
 	case PhaseChillDown:
-		return 0.08, 0.02
+		return 0.08, 0.008
 	case PhaseIgnition:
-		return lerp(0.08, 2.6, p), 0.35
+		return lerp(0.08, 2.6, p), lerp(0.008, 0.35, p)
 	case PhaseSteady:
 		return 2.6, 0.3
 	case PhaseShutdown:
-		return decay(2.6, 0.02, p), 0.2
+		return decay(2.6, 0.02, p), decay(0.2, 0.005, p)
 	}
 	return 0.02, 0.005
 }
@@ -308,11 +308,11 @@ func fuelFlow(phaseName string, p float64) (base, sigma float64) {
 		// Bleed flow while the lines chill.
 		return 0.4, 0.05
 	case PhaseIgnition:
-		return lerp(0.4, steadyFlow, p), 0.4
+		return lerp(0.4, steadyFlow, p), lerp(0.05, 0.4, p)
 	case PhaseSteady:
 		return steadyFlow, 0.25
 	case PhaseShutdown:
-		return decay(steadyFlow, 0, p), 0.2
+		return decay(steadyFlow, 0, p), decay(0.2, 0.002, p)
 	}
 	return 0, 0.002
 }
