@@ -81,6 +81,31 @@ exactly what the lockfile pins and does not execute package lifecycle hooks.
 SHA-256) rather than through third-party actions, so the CI toolchain is
 auditable from the workflow file alone.
 
+## Where things run
+
+The day-to-day loop runs **on the host**: `just server`, `just web`, `just test` and the
+rest use your locally installed Go, Node and buf. The dev container is a **parity check**,
+not the working environment — use it to confirm something builds and generates identically
+on Linux before pushing:
+
+```
+docker build -f .devcontainer/Dockerfile -t telemetry-dev .
+docker run --rm -v "$PWD:/workspaces/telemetry" -v /workspaces/telemetry/web/node_modules \
+  telemetry-dev bash -c "just install && just lint && just test && just gen-check"
+```
+
+The container only applies when the project is opened in it (VS Code Dev Containers or the
+`devcontainer` CLI) or when invoked explicitly as above. Running `just` in a normal shell
+never touches it.
+
+The main supply-chain risk is covered on the host regardless: `just install` runs
+`npm ci --ignore-scripts`, so package lifecycle hooks never execute. What the host does not
+sandbox is `go build` and `go test`, which compile and run dependency code directly.
+
+**Benchmarks are host-measured.** The M2 and M3 performance numbers must come from the same
+environment to be comparable, so both are taken on the host with the server and Vite running
+locally. Record the machine alongside the numbers in `NOTES.md`.
+
 ## Go toolchain note
 
 `server/go.mod` requires Go 1.26+, because `connect-go` 1.21 does. If your local
