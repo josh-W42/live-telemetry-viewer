@@ -37,6 +37,12 @@ export const WINDOW_SIZES = [
 /** Ten minutes at 1kHz — the ring buffer's capacity, and so the pannable range. */
 export const RETENTION_MS = 600_000;
 
+/**
+ * Narrowest window the user can reach: 100ms, about 100 samples per channel.
+ * Below this the view stops being a trace and starts being a few dots.
+ */
+export const MIN_SPAN_MS = 100;
+
 export const initialViewState: ViewState = {
   window: { kind: "live" },
   durationMs: 600_000,
@@ -106,10 +112,100 @@ const viewSlice = createSlice({
 
       state.window = { kind: "pinned", startMs: clampedStart, endMs: clampedEnd };
     },
+
+    /**
+     * Zoom by a multiplicative factor about a point in the view.
+     *
+     * Relative, not absolute, and that is the whole point. The first version of
+     * this read ECharts' dataZoom percentages and used them directly, which
+     * created a feedback loop: the chart reports a fraction of the data it
+     * currently holds, and applying the result replaced that data with exactly
+     * the range selected. Zoom-out could then never exceed 100% of an
+     * ever-narrowing window, so it behaved like zoom-in. Expressing the gesture
+     * against the window we already own removes the loop entirely.
+     */
+    zoomBy(
+      state,
+      action: PayloadAction<{
+        factor: number;
+        /** Where the cursor sat across the plot, 0 (left) to 1 (right). */
+        anchorFraction: number;
+        nowMs: number;
+        retentionMs: number;
+      }>,
+    ) {
+      const { factor, anchorFraction, nowMs, retentionMs } = action.payload;
+      if (!Number.isFinite(factor) || factor <= 0) return;
+      if (!Number.isFinite(anchorFraction)) return;
+
+      const current = resolveBounds(state, nowMs);
+      const span = current.endMs - current.startMs;
+
+      // Zooming out past everything retained is a request to see it all, which
+      // is just live at the full window.
+      const wanted = span * factor;
+      if (wanted >= retentionMs) {
+        state.window = { kind: "live" };
+        state.durationMs = retentionMs;
+        return;
+      }
+
+      const nextSpan = Math.max(wanted, MIN_SPAN_MS);
+
+      // Hold the instant under the cursor still, so zooming feels anchored
+      // rather than recentring.
+      const anchor = current.startMs + anchorFraction * span;
+      const start = anchor - anchorFraction * nextSpan;
+
+      state.window = fitWindow(start, nextSpan, nowMs, retentionMs);
+    },
+
+    /** Slide the window by a fraction of its own span. Positive is forwards. */
+    panBy(
+      state,
+      action: PayloadAction<{ fraction: number; nowMs: number; retentionMs: number }>,
+    ) {
+      const { fraction, nowMs, retentionMs } = action.payload;
+      if (!Number.isFinite(fraction)) return;
+
+      const current = resolveBounds(state, nowMs);
+      const span = current.endMs - current.startMs;
+
+      state.window = fitWindow(current.startMs + fraction * span, span, nowMs, retentionMs);
+    },
   },
 });
 
-export const { pause, jumpToLive, setWindowSize, zoomTo } = viewSlice.actions;
+/** The concrete bounds a state is currently showing. */
+function resolveBounds(state: ViewState, nowMs: number): { startMs: number; endMs: number } {
+  return state.window.kind === "pinned"
+    ? { startMs: state.window.startMs, endMs: state.window.endMs }
+    : { startMs: nowMs - state.durationMs, endMs: nowMs };
+}
+
+/**
+ * Place a window of a given span inside the retained range.
+ *
+ * Slides rather than truncates when it runs off an edge, so panning to the end
+ * of the buffer keeps the span the user chose instead of squashing the view.
+ */
+function fitWindow(
+  startMs: number,
+  spanMs: number,
+  nowMs: number,
+  retentionMs: number,
+): ViewWindow {
+  const earliest = nowMs - retentionMs;
+  const span = Math.min(spanMs, retentionMs);
+
+  let start = startMs;
+  if (start + span > nowMs) start = nowMs - span;
+  if (start < earliest) start = earliest;
+
+  return { kind: "pinned", startMs: start, endMs: start + span };
+}
+
+export const { pause, jumpToLive, setWindowSize, zoomTo, zoomBy, panBy } = viewSlice.actions;
 export default viewSlice.reducer;
 
 /**

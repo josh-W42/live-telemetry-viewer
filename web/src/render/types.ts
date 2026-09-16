@@ -44,12 +44,17 @@ export interface ChartRenderer {
   setWindow(window: RenderWindow): void;
 
   /**
-   * Called when the user zooms or pans, with the range they landed on.
+   * Called when the user zooms or pans.
    *
-   * The renderer reports the gesture rather than acting on it, so the store
-   * stays the single source of truth for what is on screen.
+   * Gestures are reported *relatively* — a factor and an anchor, not a range.
+   * An earlier version reported absolute ranges taken from ECharts' own
+   * dataZoom, which fed back on itself: the chart expresses zoom as a
+   * percentage of the data it holds, and applying the result replaced that data
+   * with exactly the selected range, so zoom-out could never exceed 100% of an
+   * ever-shrinking window. Relative gestures leave the store as the only thing
+   * that knows where the window actually is.
    */
-  onZoom(handler: (range: { startMs: number; endMs: number }) => void): void;
+  onGesture(handler: (gesture: ViewGesture) => void): void;
 
   /** Called once per incoming batch. Ignored when ownsDataSource is true. */
   push(batch: TelemetryBatch): void;
@@ -158,4 +163,28 @@ export function baseOption(channels: Channel[]) {
       data: [] as number[][],
     })),
   };
+}
+
+/**
+ * A user gesture on the chart, expressed relative to whatever is on screen.
+ *
+ * `factor` below 1 zooms in, above 1 zooms out. `anchorFraction` is where the
+ * cursor sat across the plot area, so the instant under it can be held still.
+ * `fraction` on a pan is a proportion of the current span, positive forwards.
+ */
+export type ViewGesture =
+  | { kind: "zoom"; factor: number; anchorFraction: number }
+  | { kind: "pan"; fraction: number };
+
+/** Grid insets from baseOption, needed to map a pixel to a plot fraction. */
+export const GRID_LEFT = 64;
+export const GRID_RIGHT = 64;
+
+/** Where `clientX` falls across the plot area, 0 (left edge) to 1 (right). */
+export function plotFraction(clientX: number, rect: DOMRect): number {
+  const plotWidth = rect.width - GRID_LEFT - GRID_RIGHT;
+  if (plotWidth <= 0) return 0.5;
+
+  const f = (clientX - rect.left - GRID_LEFT) / plotWidth;
+  return Math.min(Math.max(f, 0), 1);
 }

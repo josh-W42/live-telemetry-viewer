@@ -3,10 +3,13 @@ import { describe, expect, it } from "vitest";
 import reducer, {
   initialViewState,
   jumpToLive,
+  MIN_SPAN_MS,
+  panBy,
   pause,
   RETENTION_MS,
   setWindowSize,
   WINDOW_SIZES,
+  zoomBy,
   zoomTo,
   type ViewState,
 } from "./viewSlice";
@@ -221,5 +224,152 @@ describe("the store holds no telemetry", () => {
         expect(["string", "number"]).toContain(typeof value);
       }
     }
+  });
+});
+
+// --- Relative gestures ----------------------------------------------------
+//
+// The first cut of zoom read ECharts' dataZoom percentages and used them as the
+// window. That created a feedback loop: the chart reports a fraction of the data
+// it currently holds, and applying the resulting window replaced that data with
+// exactly the range selected. Zoom-out could then never exceed 100% of an
+// ever-narrowing window, so it silently behaved like zoom-in.
+//
+// Gestures are therefore expressed relative to the window we already own.
+
+describe("zoomBy", () => {
+  const base = { nowMs: NOW, retentionMs: RETENTION_MS, anchorFraction: 0.5 };
+
+  it("narrows the window when the factor is below 1", () => {
+    const before = pinned(NOW - 20_000, NOW - 10_000);
+    const state = reducer(before, zoomBy({ ...base, factor: 0.5 }));
+
+    const w = state.window as { startMs: number; endMs: number };
+    expect(w.endMs - w.startMs).toBe(5_000);
+  });
+
+  // The regression: this must actually widen.
+  it("widens the window when the factor is above 1", () => {
+    const before = pinned(NOW - 20_000, NOW - 10_000);
+    const state = reducer(before, zoomBy({ ...base, factor: 2 }));
+
+    const w = state.window as { startMs: number; endMs: number };
+    expect(w.endMs - w.startMs).toBe(20_000);
+  });
+
+  it("keeps widening across repeated zoom-outs", () => {
+    let state: ViewState = pinned(NOW - 2_000, NOW - 1_000);
+    const spans: number[] = [];
+
+    for (let i = 0; i < 4; i++) {
+      state = reducer(state, zoomBy({ ...base, factor: 1.5 }));
+      const w = state.window as { startMs: number; endMs: number };
+      spans.push(w.endMs - w.startMs);
+    }
+
+    for (let i = 1; i < spans.length; i++) {
+      expect(spans[i]!).toBeGreaterThan(spans[i - 1]!);
+    }
+  });
+
+  it("holds the point under the cursor still", () => {
+    const before = pinned(NOW - 20_000, NOW - 10_000);
+    // Anchor a quarter of the way in: t = start + 0.25 * 10_000
+    const anchorTime = NOW - 20_000 + 2_500;
+
+    const state = reducer(before, zoomBy({ ...base, anchorFraction: 0.25, factor: 0.5 }));
+    const w = state.window as { startMs: number; endMs: number };
+
+    expect(w.startMs + 0.25 * (w.endMs - w.startMs)).toBeCloseTo(anchorTime, 6);
+  });
+
+  it("pins and pauses when zooming from live", () => {
+    const state = reducer(
+      { window: { kind: "live" }, durationMs: 30_000 },
+      zoomBy({ ...base, factor: 0.5 }),
+    );
+
+    expect(state.window.kind).toBe("pinned");
+    const w = state.window as { startMs: number; endMs: number };
+    expect(w.endMs - w.startMs).toBe(15_000);
+  });
+
+  it("returns to live once zoomed out past the retained span", () => {
+    const state = reducer(pinned(NOW - 400_000, NOW), zoomBy({ ...base, factor: 4 }));
+
+    expect(state.window).toEqual({ kind: "live" });
+    expect(state.durationMs).toBe(RETENTION_MS);
+  });
+
+  it("refuses to zoom in below a floor, so the window never collapses", () => {
+    let state: ViewState = pinned(NOW - 1_000, NOW);
+    for (let i = 0; i < 20; i++) state = reducer(state, zoomBy({ ...base, factor: 0.5 }));
+
+    const w = state.window as { startMs: number; endMs: number };
+    expect(w.endMs - w.startMs).toBeGreaterThanOrEqual(MIN_SPAN_MS);
+  });
+
+  it("ignores a non-positive or non-finite factor", () => {
+    const before = pinned(NOW - 20_000, NOW - 10_000);
+    for (const factor of [0, -1, NaN, Infinity]) {
+      expect(reducer(before, zoomBy({ ...base, factor }))).toEqual(before);
+    }
+  });
+});
+
+describe("panBy", () => {
+  const base = { nowMs: NOW, retentionMs: RETENTION_MS };
+
+  it("shifts the window forward by a fraction of its span", () => {
+    const state = reducer(pinned(NOW - 30_000, NOW - 20_000), panBy({ ...base, fraction: 0.5 }));
+
+    expect(state.window).toEqual({
+      kind: "pinned",
+      startMs: NOW - 25_000,
+      endMs: NOW - 15_000,
+    });
+  });
+
+  it("shifts backwards for a negative fraction", () => {
+    const state = reducer(pinned(NOW - 30_000, NOW - 20_000), panBy({ ...base, fraction: -0.5 }));
+
+    expect(state.window).toEqual({
+      kind: "pinned",
+      startMs: NOW - 35_000,
+      endMs: NOW - 25_000,
+    });
+  });
+
+  it("preserves the span when clamped at the live edge", () => {
+    const state = reducer(pinned(NOW - 10_000, NOW), panBy({ ...base, fraction: 5 }));
+
+    const w = state.window as { startMs: number; endMs: number };
+    expect(w.endMs).toBe(NOW);
+    expect(w.endMs - w.startMs).toBe(10_000);
+  });
+
+  it("preserves the span when clamped at the retention edge", () => {
+    const state = reducer(
+      pinned(NOW - RETENTION_MS + 5_000, NOW - RETENTION_MS + 15_000),
+      panBy({ ...base, fraction: -50 }),
+    );
+
+    const w = state.window as { startMs: number; endMs: number };
+    expect(w.startMs).toBe(NOW - RETENTION_MS);
+    expect(w.endMs - w.startMs).toBe(10_000);
+  });
+
+  it("pins and pauses when panning from live", () => {
+    const state = reducer(
+      { window: { kind: "live" }, durationMs: 30_000 },
+      panBy({ ...base, fraction: -0.25 }),
+    );
+
+    expect(state.window.kind).toBe("pinned");
+  });
+
+  it("ignores a non-finite fraction", () => {
+    const before = pinned(NOW - 30_000, NOW - 20_000);
+    expect(reducer(before, panBy({ ...base, fraction: NaN }))).toEqual(before);
   });
 });

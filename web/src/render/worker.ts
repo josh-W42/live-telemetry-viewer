@@ -3,7 +3,15 @@ import * as echarts from "echarts";
 import type { Channel, TelemetryBatch } from "../gen/telemetry/v1/telemetry_pb";
 import type { ViewMessage, WorkerMessage, WorkerRequest } from "../worker/protocol";
 import type { RenderWindow } from "../store/viewSlice";
-import { baseOption, RenderTimer, type ChartRenderer } from "./types";
+import {
+  baseOption,
+  GRID_LEFT,
+  GRID_RIGHT,
+  plotFraction,
+  RenderTimer,
+  type ChartRenderer,
+  type ViewGesture,
+} from "./types";
 
 /** Ten minutes at 1kHz. Sized once; the worker never grows past it. */
 const CAPACITY = 600_000;
@@ -39,7 +47,9 @@ export class WorkerRenderer implements ChartRenderer {
   private inFlight = 0;
 
   private window: RenderWindow = { kind: "live", durationMs: 600_000 };
-  private zoomHandler: ((r: { startMs: number; endMs: number }) => void) | null = null;
+  private gestureHandler: ((g: ViewGesture) => void) | null = null;
+  private container: HTMLDivElement | null = null;
+  private dragLastX: number | null = null;
 
   private held = 0;
   private rendered = 0;
@@ -50,34 +60,16 @@ export class WorkerRenderer implements ChartRenderer {
 
   init(el: HTMLDivElement, channels: Channel[]): void {
     this.chart = echarts.init(el, undefined, { renderer: "canvas" });
-    this.chart.setOption({
-      ...baseOption(channels),
-      dataZoom: [
-        {
-          type: "inside",
-          xAxisIndex: 0,
-          // The worker already filters by time. Letting ECharts filter too
-          // would drop points from a series that was downsampled precisely to
-          // fit, leaving gaps at the edges of the view.
-          filterMode: "none",
-          throttle: 100,
-        },
-      ],
-    });
+    // No ECharts dataZoom component. It keeps its own notion of the visible
+    // range as a percentage of the data it holds, which fights with ours: we
+    // replace that data with exactly the window selected, so its 0-100% shrinks
+    // to the current window and zoom-out can never escape. Gestures are handled
+    // here instead and reported relatively.
+    this.chart.setOption(baseOption(channels));
 
-    // ECharts reports the gesture; the store decides what it means. Reading
-    // startValue/endValue gives real axis times, so there is no percentage
-    // arithmetic to get wrong.
-    this.chart.on("dataZoom", () => {
-      const zoom = (this.chart?.getOption() as { dataZoom?: { startValue?: number; endValue?: number }[] })
-        ?.dataZoom?.[0];
-      if (!zoom) return;
-
-      const { startValue, endValue } = zoom;
-      if (typeof startValue !== "number" || typeof endValue !== "number") return;
-
-      this.zoomHandler?.({ startMs: startValue, endMs: endValue });
-    });
+    this.container = el;
+    el.addEventListener("wheel", this.onWheel, { passive: false });
+    el.addEventListener("pointerdown", this.onPointerDown);
 
     this.channelIds = channels.map((c) => c.id);
     this.seriesIndex = new Map(channels.map((c, i) => [c.id, i]));
@@ -172,9 +164,58 @@ export class WorkerRenderer implements ChartRenderer {
     }
   }
 
-  onZoom(handler: (range: { startMs: number; endMs: number }) => void): void {
-    this.zoomHandler = handler;
+  onGesture(handler: (gesture: ViewGesture) => void): void {
+    this.gestureHandler = handler;
   }
+
+  /** One notch of wheel zooms by this much; the inverse zooms back out. */
+  private static readonly ZOOM_STEP = 0.8;
+
+  private onWheel = (e: WheelEvent): void => {
+    if (!this.container) return;
+    // Otherwise the page scrolls while the user is trying to zoom the chart.
+    e.preventDefault();
+
+    const factor = e.deltaY < 0 ? WorkerRenderer.ZOOM_STEP : 1 / WorkerRenderer.ZOOM_STEP;
+    this.gestureHandler?.({
+      kind: "zoom",
+      factor,
+      anchorFraction: plotFraction(e.clientX, this.container.getBoundingClientRect()),
+    });
+  };
+
+  private onPointerDown = (e: PointerEvent): void => {
+    if (!this.container || e.button !== 0) return;
+
+    this.dragLastX = e.clientX;
+    this.container.setPointerCapture(e.pointerId);
+    this.container.addEventListener("pointermove", this.onPointerMove);
+    this.container.addEventListener("pointerup", this.onPointerUp);
+    this.container.addEventListener("pointercancel", this.onPointerUp);
+  };
+
+  private onPointerMove = (e: PointerEvent): void => {
+    if (!this.container || this.dragLastX === null) return;
+
+    const rect = this.container.getBoundingClientRect();
+    const plotWidth = rect.width - GRID_LEFT - GRID_RIGHT;
+    if (plotWidth <= 0) return;
+
+    const dx = e.clientX - this.dragLastX;
+    this.dragLastX = e.clientX;
+
+    // Dragging right should pull earlier data into view, so the window moves
+    // backwards in time - hence the negation.
+    this.gestureHandler?.({ kind: "pan", fraction: -dx / plotWidth });
+  };
+
+  private onPointerUp = (e: PointerEvent): void => {
+    this.dragLastX = null;
+    this.container?.releasePointerCapture?.(e.pointerId);
+    this.container?.removeEventListener("pointermove", this.onPointerMove);
+    this.container?.removeEventListener("pointerup", this.onPointerUp);
+    this.container?.removeEventListener("pointercancel", this.onPointerUp);
+  };
 
   private requestView(): void {
     const width = this.chart?.getWidth() ?? 1200;
@@ -284,6 +325,11 @@ export class WorkerRenderer implements ChartRenderer {
 
   dispose(): void {
     this.setActive(false);
+
+    this.container?.removeEventListener("wheel", this.onWheel);
+    this.container?.removeEventListener("pointerdown", this.onPointerDown);
+    this.onPointerUp({ pointerId: -1 } as PointerEvent);
+    this.container = null;
 
     this.worker?.terminate();
     this.worker = null;

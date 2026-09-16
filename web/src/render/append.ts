@@ -1,7 +1,13 @@
 import * as echarts from "echarts";
 
 import type { Channel, TelemetryBatch } from "../gen/telemetry/v1/telemetry_pb";
-import { baseOption, nsToMs, RenderTimer, type ChartRenderer } from "./types";
+import {
+  baseOption,
+  nsToMs,
+  RenderTimer,
+  type ChartRenderer,
+  type ViewGesture,
+} from "./types";
 import type { RenderWindow } from "../store/viewSlice";
 
 /**
@@ -94,7 +100,7 @@ export class AppendRenderer implements ChartRenderer {
     void _window;
   }
 
-  onZoom(_handler: (range: { startMs: number; endMs: number }) => void): void {
+  onGesture(_handler: (gesture: ViewGesture) => void): void {
     void _handler;
   }
 

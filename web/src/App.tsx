@@ -20,9 +20,10 @@ import {
   pause,
   RETENTION_MS,
   selectRenderWindow,
+  panBy,
   setWindowSize,
   WINDOW_SIZES,
-  zoomTo,
+  zoomBy,
 } from "./store/viewSlice";
 
 type Connection = "idle" | "connecting" | "streaming" | "error";
@@ -235,9 +236,12 @@ export function App() {
     const r = renderer.current;
     if (!r) return;
 
-    r.onZoom(({ startMs, endMs }) => {
+    r.onGesture((g) => {
+      const at = { nowMs: Date.now(), retentionMs: RETENTION_MS };
       dispatch(
-        zoomTo({ startMs, endMs, nowMs: Date.now(), retentionMs: RETENTION_MS }),
+        g.kind === "zoom"
+          ? zoomBy({ ...at, factor: g.factor, anchorFraction: g.anchorFraction })
+          : panBy({ ...at, fraction: g.fraction }),
       );
     });
     r.setWindow(renderWindow);
@@ -325,6 +329,19 @@ export function App() {
     };
     (window as unknown as { __telemetryBench: typeof handle }).__telemetryBench = handle;
   }, [startBench, stopBench]);
+
+  // The current window, for scripted checks. Cheap, and the same affordance as
+  // __telemetryBench: it beats inferring the view state from pixels.
+  useEffect(() => {
+    const spanMs =
+      view.window.kind === "pinned"
+        ? view.window.endMs - view.window.startMs
+        : view.durationMs;
+    (window as unknown as { __telemetryView: unknown }).__telemetryView = {
+      ...view,
+      spanMs,
+    };
+  }, [view]);
 
   const busy = running;
 
