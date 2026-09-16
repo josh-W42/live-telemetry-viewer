@@ -2,64 +2,92 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"log"
 	"net/http"
+	"os/signal"
+	"syscall"
 	"time"
 
-	connectcors "connectrpc.com/cors"
-	"github.com/rs/cors"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
-
-	"github.com/josh-W42/sift/server/gen/telemetry/v1/telemetryv1connect"
+	"github.com/josh-W42/sift/server/internal/sim"
 	"github.com/josh-W42/sift/server/internal/stream"
 )
 
 func main() {
 	port := flag.String("port", "8080", "port to listen on")
-	// Declared now because the spec calls for them; the simulator reads them in M1.
 	rate := flag.Float64("rate", 1000, "samples per second per channel")
 	seed := flag.Int64("seed", 1, "simulator seed, for reproducible runs")
 	batchInterval := flag.Duration("batch-interval", 50*time.Millisecond, "how often to flush a batch")
 	allowedOrigin := flag.String("allowed-origin", "http://localhost:5173", "CORS origin for the Vite dev server")
 	flag.Parse()
 
-	mux := http.NewServeMux()
-	mux.Handle(telemetryv1connect.NewTelemetryServiceHandler(stream.New()))
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-	handler := withCORS(mux, *allowedOrigin)
+	// The simulator is pure, so the epoch is fixed once here. Everything
+	// downstream derives timestamps from it.
+	simulator := sim.New(sim.Config{
+		Seed:    *seed,
+		RateHz:  *rate,
+		EpochNs: time.Now().UnixNano(),
+	})
 
-	addr := ":" + *port
+	bus := stream.NewBroadcaster(stream.DefaultBufferDepth)
+
+	// One simulator feeds the broadcaster, so every browser tab sees the same
+	// engine run. It starts at boot and keeps running with no subscribers, so
+	// the test sequence stays on the wall clock.
+	pump := stream.NewPump(simulator, bus, *batchInterval)
+	go pump.Run(ctx)
+
+	go logStats(ctx, bus)
+
 	srv := &http.Server{
-		Addr: addr,
-		// h2c serves HTTP/2 over cleartext. Without it, Go only speaks HTTP/2
-		// over TLS, and gRPC clients (which require HTTP/2) could not reach a
-		// plain http:// dev server. Browsers using the Connect protocol are
-		// fine over HTTP/1.1, so this is here for grpc/grpcurl compatibility.
-		Handler:           h2c.NewHandler(handler, &http2.Server{}),
+		Addr:              ":" + *port,
+		Handler:           stream.NewHTTPHandler(stream.New(simulator, bus), *allowedOrigin),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	log.Printf("telemetry server listening on %s (rate=%.0fHz seed=%d batch=%s)", addr, *rate, *seed, *batchInterval)
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("shutdown: %v", err)
+		}
+	}()
+
+	log.Printf("telemetry server listening on %s (rate=%.0fHz seed=%d batch=%s loop=%s)",
+		srv.Addr, *rate, *seed, *batchInterval, sim.LoopDuration())
+
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("server: %v", err)
 	}
+	log.Print("server stopped")
 }
 
-// withCORS allows the Vite dev server to call the API from a different origin.
-//
-// Connect sends and receives a handful of its own headers (Connect-Protocol-Version,
-// Connect-Timeout-Ms, the Grpc-* trailers). A browser blocks any header not named
-// in the CORS preflight response, so connectcors supplies the exact lists rather
-// than us hand-maintaining them.
-func withCORS(h http.Handler, origin string) http.Handler {
-	return cors.New(cors.Options{
-		AllowedOrigins: []string{origin},
-		AllowedMethods: connectcors.AllowedMethods(),
-		AllowedHeaders: connectcors.AllowedHeaders(),
-		ExposedHeaders: connectcors.ExposedHeaders(),
-		MaxAge:         7200, // seconds; caps Chrome's preflight cache
-	}).Handler(h)
+// logStats periodically reports subscriber and drop counts, so backpressure is
+// visible from the server side without attaching a debugger.
+func logStats(ctx context.Context, bus *stream.Broadcaster) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	var lastDropped uint64
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			subs := bus.SubscriberCount()
+			if subs == 0 {
+				continue
+			}
+			dropped := bus.Dropped()
+			log.Printf("stream: subscribers=%d dropped=%d (+%d since last report)",
+				subs, dropped, dropped-lastDropped)
+			lastDropped = dropped
+		}
+	}
 }

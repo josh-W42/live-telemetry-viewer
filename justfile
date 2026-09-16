@@ -52,9 +52,13 @@ gen-check: gen
     @git diff --exit-code -- server/gen web/src/gen \
       || (echo "generated code is stale — commit the result of 'just gen'" && exit 1)
 
+# Coverage is measured over ./internal/... only. server/gen is generated from
+# the protos and is not ours to test, and counting it drags the total down by
+# more than half while saying nothing about the code we actually wrote.
+
 # Run Go tests with coverage and print the total.
 cover:
-    cd server && go test ./... -coverprofile=coverage.out -covermode=atomic
+    cd server && go test ./internal/... -coverprofile=coverage.out -covermode=atomic
     cd server && go tool cover -func=coverage.out | tail -1
 
 # Open the Go coverage report in a browser.

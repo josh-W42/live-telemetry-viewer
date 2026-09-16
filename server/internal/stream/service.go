@@ -1,31 +1,32 @@
-// Package stream implements the TelemetryService Connect handlers.
+// Package stream implements the TelemetryService Connect handlers, the
+// fan-out broadcaster behind them, and the pump that feeds it.
 package stream
 
 import (
 	"context"
-	"errors"
+	"log"
 
 	"connectrpc.com/connect"
 
 	telemetryv1 "github.com/josh-W42/sift/server/gen/telemetry/v1"
 	"github.com/josh-W42/sift/server/gen/telemetry/v1/telemetryv1connect"
+	"github.com/josh-W42/sift/server/internal/sim"
 )
 
 // Service implements telemetryv1connect.TelemetryServiceHandler.
-//
-// M0 wires up the transport only: both methods report Unimplemented so the
-// browser gets a real, structured Connect error across the wire. M1 replaces
-// these with the simulator and the fan-out broadcaster.
-type Service struct{}
+type Service struct {
+	sim *sim.Simulator
+	bus *Broadcaster
+}
 
-// Compile-time proof that Service satisfies the generated interface. If a proto
-// change alters a method signature, this fails at build time rather than at
-// handler registration.
+// Compile-time proof that Service satisfies the generated interface. If a
+// proto change alters a method signature, this fails at build time rather than
+// at handler registration.
 var _ telemetryv1connect.TelemetryServiceHandler = (*Service)(nil)
 
-// New returns a Service.
-func New() *Service {
-	return &Service{}
+// New returns a Service reading channel metadata from s and batches from bus.
+func New(s *sim.Simulator, bus *Broadcaster) *Service {
+	return &Service{sim: s, bus: bus}
 }
 
 // ListChannels returns the channels the simulator produces.
@@ -33,20 +34,53 @@ func (s *Service) ListChannels(
 	_ context.Context,
 	_ *connect.Request[telemetryv1.ListChannelsRequest],
 ) (*connect.Response[telemetryv1.ListChannelsResponse], error) {
-	return nil, connect.NewError(
-		connect.CodeUnimplemented,
-		errors.New("ListChannels arrives in M1"),
-	)
+	chans := s.sim.Channels()
+
+	out := make([]*telemetryv1.Channel, len(chans))
+	for i, c := range chans {
+		out[i] = &telemetryv1.Channel{
+			Id:           c.ID,
+			Name:         c.Name,
+			Unit:         c.Unit,
+			SampleRateHz: c.SampleRateHz,
+		}
+	}
+
+	return connect.NewResponse(&telemetryv1.ListChannelsResponse{Channels: out}), nil
 }
 
 // StreamTelemetry streams batched samples until the client disconnects.
 func (s *Service) StreamTelemetry(
-	_ context.Context,
-	_ *connect.Request[telemetryv1.StreamTelemetryRequest],
-	_ *connect.ServerStream[telemetryv1.TelemetryBatch],
+	ctx context.Context,
+	req *connect.Request[telemetryv1.StreamTelemetryRequest],
+	out *connect.ServerStream[telemetryv1.TelemetryBatch],
 ) error {
-	return connect.NewError(
-		connect.CodeUnimplemented,
-		errors.New("StreamTelemetry arrives in M1"),
-	)
+	sub := s.bus.Subscribe(req.Msg.ChannelIds)
+	defer sub.Close()
+
+	log.Printf("stream: subscriber connected (channels=%v, total=%d)",
+		req.Msg.ChannelIds, s.bus.SubscriberCount())
+	defer func() {
+		log.Printf("stream: subscriber disconnected (dropped=%d, remaining=%d)",
+			sub.Dropped(), s.bus.SubscriberCount()-1)
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Client hung up or the server is shutting down. Not an error.
+			return nil
+
+		case batch, ok := <-sub.C():
+			if !ok {
+				return nil
+			}
+			// Send blocks until the batch is written. That is fine: it blocks
+			// this one handler goroutine, never the pump, because the
+			// broadcaster already handed us a buffered copy.
+			if err := out.Send(batch); err != nil {
+				return err
+			}
+		}
+	}
 }
