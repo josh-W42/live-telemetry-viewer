@@ -12,6 +12,7 @@ import {
   plotFraction,
   RenderTimer,
   type ChartRenderer,
+  type ConnectionStatus,
   type ViewGesture,
 } from "./types";
 
@@ -20,6 +21,7 @@ const CAPACITY = 600_000;
 
 /** ~30fps. Faster than this redraws frames nobody sees. */
 const FRAME_INTERVAL_MS = 33;
+
 
 /**
  * Mode C: ring buffers and LTTB in a worker.
@@ -58,12 +60,25 @@ export class WorkerRenderer implements ChartRenderer {
   private held = 0;
   private rendered = 0;
   private batches = 0;
-  private gaps = 0;
+  private dropped = 0;
+  private perChannel: Record<string, number> = {};
 
-  constructor(private readonly baseUrl: string) {}
+  /** `null` until the app says otherwise, which the worker reads as all of them. */
+  private visible: string[] | null = null;
+  private statusHandler: ((status: ConnectionStatus) => void) | null = null;
+
+  /**
+   * @param backend ECharts renderer. Canvas is what ships; `svg` exists so the
+   * two can be measured against each other on the same harness rather than
+   * compared from first principles.
+   */
+  constructor(
+    private readonly baseUrl: string,
+    private readonly backend: "canvas" | "svg" = "canvas",
+  ) {}
 
   init(el: HTMLDivElement, channels: Channel[]): void {
-    this.chart = echarts.init(el, undefined, { renderer: "canvas" });
+    this.chart = echarts.init(el, undefined, { renderer: this.backend });
     // No ECharts dataZoom component. It keeps its own notion of the visible
     // range as a percentage of the data it holds, which fights with ours: we
     // replace that data with exactly the window selected, so its 0-100% shrinks
@@ -94,6 +109,8 @@ export class WorkerRenderer implements ChartRenderer {
     if (active === this.active) return;
     this.active = active;
 
+    this.report(active ? "connecting" : "idle");
+
     if (active) {
       this.send({
         type: "start",
@@ -121,6 +138,10 @@ export class WorkerRenderer implements ChartRenderer {
     cancelAnimationFrame(this.rafHandle);
     this.rafHandle = 0;
     this.inFlight = 0;
+  }
+
+  private report(state: ConnectionStatus["state"], message?: string): void {
+    this.statusHandler?.({ state, message });
   }
 
   /** Mode C feeds itself; batches never come through here. */
@@ -176,6 +197,32 @@ export class WorkerRenderer implements ChartRenderer {
     this.anomalyHandler = handler;
   }
 
+  onStatus(handler: (status: ConnectionStatus) => void): void {
+    this.statusHandler = handler;
+  }
+
+  /**
+   * Draw only these channels.
+   *
+   * The list goes down in the view request rather than being applied here, so
+   * the worker skips slicing and downsampling a channel nobody is looking at
+   * and `pointsRendered` stays a count of points that were actually drawn.
+   * Ingestion is untouched: the hidden channel's ring buffer keeps filling and
+   * its rules keep firing, so ticking it back on reveals the whole history
+   * rather than starting from the moment it reappeared.
+   */
+  setVisibleChannels(channelIds: string[]): void {
+    this.visible = channelIds;
+    if (!this.chart) return;
+
+    // A pinned window is served once, so without this the change would not
+    // appear until something else moved the view.
+    if (this.active && this.window.kind === "pinned") {
+      this.inFlight = 0;
+      this.requestView();
+    }
+  }
+
   /**
    * Shade the anomalies on the chart.
    *
@@ -193,8 +240,15 @@ export class WorkerRenderer implements ChartRenderer {
    * the chart says which sensor tripped without a trip to the sidebar.
    */
   private markAreas(): { markArea: unknown }[] {
+    const shown = this.visible === null ? null : new Set(this.visible);
+
     return this.channelIds.map((id) => {
-      const mine = this.anomalies.filter((a) => a.channelId === id);
+      // A band belonging to a hidden trace would shade a region of the chart
+      // with nothing in it to explain the shading.
+      const mine =
+        shown !== null && !shown.has(id)
+          ? []
+          : this.anomalies.filter((a) => a.channelId === id);
       return {
         markArea: {
           silent: true,
@@ -281,6 +335,7 @@ export class WorkerRenderer implements ChartRenderer {
       // Narrowing the window does not change this number - it changes how much
       // detail each point carries, which is why zooming reveals real structure.
       maxPoints: Math.max(2, width * 2),
+      channelIds: this.visible,
     });
   }
 
@@ -298,9 +353,11 @@ export class WorkerRenderer implements ChartRenderer {
   private onMessage(msg: WorkerMessage): void {
     switch (msg.type) {
       case "ready":
+        this.report("streaming");
         break;
       case "error":
         console.error("telemetry worker:", msg.message);
+        this.report("error", msg.message);
         // Release the slot, or the frame loop would wait forever on a reply
         // that is never coming.
         this.inFlight = 0;
@@ -310,7 +367,8 @@ export class WorkerRenderer implements ChartRenderer {
         // the ring buffers filling.
         this.held = msg.pointsHeld;
         this.batches = msg.batches;
-        this.gaps = msg.gaps;
+        this.dropped = msg.droppedBatches;
+        this.perChannel = msg.perChannel;
         this.bufferBytes = msg.bytes;
         this.anomalyHandler?.(msg.anomalies);
         break;
@@ -331,7 +389,7 @@ export class WorkerRenderer implements ChartRenderer {
     this.held = msg.pointsHeld;
     this.rendered = msg.pointsRendered;
     this.batches = msg.batches;
-    this.gaps = msg.gaps;
+    this.dropped = msg.droppedBatches;
 
     if (!this.chart) return;
 
@@ -364,8 +422,13 @@ export class WorkerRenderer implements ChartRenderer {
     return this.rendered;
   }
 
-  streamStats(): { batches: number; gaps: number } {
-    return { batches: this.batches, gaps: this.gaps };
+  streamStats(): { batches: number; droppedBatches: number } {
+    return { batches: this.batches, droppedBatches: this.dropped };
+  }
+
+  /** Retained samples per channel, for the channel list. */
+  heldPerChannel(): Record<string, number> {
+    return this.perChannel;
   }
 
   takeRenderStats(): { totalMs: number; maxMs: number } {
@@ -404,7 +467,9 @@ export class WorkerRenderer implements ChartRenderer {
       this.inFlight = 0;
       this.gestureHandler = null;
       this.anomalyHandler = null;
+      this.statusHandler = null;
       this.anomalies = [];
+      this.perChannel = {};
     }
   }
 

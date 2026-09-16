@@ -33,6 +33,22 @@ export interface ViewRequest {
   endNs: bigint;
   /** Roughly twice the chart's pixel width. */
   maxPoints: number;
+  /**
+   * Channels to return. `null` means every channel; `[]` means none.
+   *
+   * Nullable rather than following `StartRequest`'s empty-means-all
+   * convention, because here the two genuinely differ: hiding every channel is
+   * a legitimate thing to ask for, and an empty array that meant "all" would
+   * answer it with the exact opposite.
+   *
+   * This is where channel visibility is applied, and deliberately not at the
+   * subscription: narrowing `StartRequest.channelIds` would restart the stream
+   * and discard the ring buffers, so unticking a channel would destroy its
+   * history. Filtering here leaves ingestion and rule evaluation untouched —
+   * a hidden channel keeps filling and keeps being checked for faults — while
+   * still sparing the worker the slice and the downsample.
+   */
+  channelIds: string[] | null;
 }
 
 /**
@@ -75,7 +91,7 @@ export interface ViewMessage {
   /** Samples actually returned after downsampling. */
   pointsRendered: number;
   batches: number;
-  gaps: number;
+  droppedBatches: number;
   /** Milliseconds the worker spent slicing and downsampling this view. */
   workerMs: number;
 }
@@ -88,7 +104,13 @@ export interface StatsMessage {
   /** Total bytes across all ring buffers. Constant once allocated. */
   bytes: number;
   batches: number;
-  gaps: number;
+  /**
+   * Batches the server sent that never arrived, counted from the gaps in
+   * `sequence`. A jump from 10 to 15 is four lost batches, not one event —
+   * counting the events instead understates a slow client by however many
+   * batches each stall swallowed.
+   */
+  droppedBatches: number;
   /**
    * Every anomaly still inside the retained window, sent whole rather than as
    * deltas. The list is tiny and an open anomaly keeps growing, so replacing

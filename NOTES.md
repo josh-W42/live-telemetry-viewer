@@ -1,4 +1,266 @@
-# Performance notes
+# Design and performance notes
+
+Why this is built the way it is, and the measurements that justify it. The design
+decisions come first; the M2-vs-M3 numbers they rest on start at [Method](#method).
+
+Everything below that is a number was measured on one machine with one harness. Where a
+claim is reasoned rather than measured, it says so.
+
+## Design decisions
+
+Organised around the questions in SPEC.md's "interview talking points", because those are
+the decisions that actually shaped the thing.
+
+### Why batch samples instead of one message per sample
+
+Four channels at 1 kHz is 4,000 samples a second. Sent individually that is 1,000 Connect
+messages a second, each carrying its own envelope, field tags, channel id and sequence
+number, all to deliver 16 bytes of payload.
+
+Encoding synthetic batches with the generated schema puts numbers on it:
+
+| Batch interval | Samples/channel | Bytes/message | Bytes/sample | Messages/s | Wire rate |
+|---|---|---|---|---|---|
+| 1 ms | 1 | 149 | 37.3 | 1,000 | 145.5 KiB/s |
+| 10 ms | 10 | 765 | 19.1 | 100 | 74.7 KiB/s |
+| **50 ms** | **50** | **3,493** | **17.5** | **20** | **68.2 KiB/s** |
+| 200 ms | 200 | 13,693 | 17.1 | 5 | 66.9 KiB/s |
+| 1,000 ms | 1,000 | 68,097 | 17.0 | 1 | 66.5 KiB/s |
+
+**Framing more than doubles the per-sample cost at one message per sample** — 37.3 bytes to
+carry a 16-byte sample — and it is the message *count* that costs more than the bytes: 1,000
+deserialisations a second on the receiving side, each waking the event loop.
+
+**The returns stop almost immediately.** Going from 50 ms to a full second saves 2.5% of
+bandwidth and adds up to a second of latency. 50 ms is past the knee: it amortises the
+framing to within 3% of its floor while staying well under the eye's tolerance for a live
+chart. The renderer requests a view about 30 times a second, so a batch is on screen within a
+frame or two of arriving.
+
+The per-sample floor of 17 bytes is set by the payload: an 8-byte double plus a
+nanosecond timestamp, which is around 1.7 × 10¹⁸ and so takes 9 bytes as a varint. That is
+also why the proto uses **packed parallel arrays** (`repeated int64 timestamps_ns` and
+`repeated double values`) rather than a repeated submessage per sample — a submessage would
+add a tag and a length prefix to every single reading.
+
+Delta-encoding the timestamps would collapse them to one byte each, since they are a
+constant 1 ms apart, and would take the wire rate to roughly half. It was not done: at
+68 KiB/s the wire is not the bottleneck, and it would put a decoding step in front of the
+one part of the pipeline that has to stay simple.
+
+### Why raw data lives in a worker, not React or Redux state
+
+Two separate reasons, and the second is the one that actually kills you.
+
+**Memory representation.** Mode A held samples as `[timestampMs, value]` arrays and needed
+**211 MB for 85,600 points** — about 2.5 KB per point, because every point is a JS array
+object with its own header and two boxed numbers. The worker's ring buffers hold **2.4M
+points in 36.6 MB** of packed `Float64Array`: 28× the data in a sixth of the space. Redux
+would not change that representation, but it would forbid the one that fixes it, because a
+store's contents have to be plain serialisable values, not views onto a shared buffer.
+
+**Immutability is the wrong tool here.** Redux updates by producing a new value. At 20
+batches a second that is 20 new arrays a second, each a copy of everything that came before,
+plus a selector run and a React render per update — which is mode A's quadratic
+re-serialisation with extra steps. Redux Toolkit's Immer would be doing structural sharing
+over a million-element array twenty times a second.
+
+So the split is: **the worker owns the samples, the store owns the questions**. The store
+holds a view window, a set of hidden channel ids, and a short list of anomalies — a few
+hundred bytes. Every slice carries a test asserting that no sample arrays ever appear in it,
+so the boundary cannot erode quietly.
+
+The third reason only became visible later: because ingestion is off the main thread, the
+rules engine sees every sample even while the main thread is busy, the view is paused, or the
+window is showing a ten-minute span in which a 30 ms spike is less than one drawn pixel.
+
+### How LTTB works, and why it beats every-Nth
+
+Largest-Triangle-Three-Buckets divides the series into roughly equal buckets and keeps one
+point from each. The choice is what makes it work: for each bucket it picks the point forming
+the **largest-area triangle** with the previously kept point and the average of the next
+bucket. Area is a proxy for visual significance, so a point that departs from the local trend
+wins over one sitting on it.
+
+Every-Nth decimation picks by position, which means it picks by luck. `lttb.test.ts` makes
+the contrast concrete: a 10,000-point series with a single spike at index 5,013, reduced to
+200 points. LTTB keeps the spike exactly; naive decimation at the same budget steps straight
+over it, and the test asserts both halves so the claim cannot rot.
+
+That matters beyond aesthetics. An anomaly is precisely the narrow feature decimation drops,
+and an anomaly you cannot see is indistinguishable from a broken detector. (The rules do not
+depend on this — they run on ingestion — but the chart has to corroborate what the sidebar
+claims, or nobody believes either.)
+
+What LTTB is not: it is not a filter and it does not smooth. Every point it returns is a real
+sample at a real timestamp. It also is not free of trade-offs — it can move a spike's
+*apparent* width, since the samples either side of it are gone.
+
+### Ring buffer sizing, and the memory math
+
+Ten minutes of retention at 1 kHz is 600,000 samples per channel. Each sample is a timestamp
+and a value, stored in two separate `Float64Array`s:
+
+```
+600,000 samples × 8 bytes × 2 arrays × 4 channels = 38,400,000 bytes = 36.6 MiB
+```
+
+Measured at 36.6 MiB, allocated once at startup and never grown. That is the whole point:
+memory is decided before the first sample arrives, so the app's footprint is the same after
+ten hours as after ten seconds. The 10-minute acceptance run bears it out — points held
+plateaued at **2,399,800 against a theoretical 2,400,000** and stopped.
+
+Two details that are not obvious:
+
+**Timestamps are stored as nanosecond offsets from a base, not as absolute epoch
+nanoseconds.** An absolute nanosecond timestamp is about 1.7 × 10¹⁸, well past
+`Number.MAX_SAFE_INTEGER` (9.0 × 10¹⁵), so putting one in a `Float64Array` quantises it to
+roughly 256 ns — at 1 kHz you would still be able to order samples, but the values would be
+wrong. Offsets from a base fixed at startup stay small enough to be exact.
+
+**Why not `Int32Array` for timestamps and `Float32Array` for values?** It would halve the
+memory. A 32-bit float carries about seven significant digits, which is fine for a vibration
+reading and marginal for a 3,200 K chamber temperature. The memory was not the constraint, so
+the precision was kept.
+
+### Backpressure: why the server drops instead of blocking
+
+One simulator feeds a fan-out broadcaster; each subscriber gets a buffered channel eight
+batches deep, which is 400 ms at a 50 ms interval. Publishing **never blocks**: if a
+subscriber's buffer is full, the broadcaster discards that subscriber's *oldest* queued batch
+and enqueues the new one.
+
+The alternative — blocking until the slow subscriber catches up — makes one slow client the
+rate limiter for the simulator and therefore for every other client. A background tab on a
+throttled timer would stall the whole test stand. There is a test asserting exactly this: a
+subscriber that never reads does not stop the others.
+
+Three consequences worth stating:
+
+**Oldest, not newest.** For live telemetry the recent data is the valuable data. A client
+that falls behind should skip forward rather than work through a backlog it will never catch
+up on.
+
+**The sequence number is assigned at publish, not at send**, so a dropped batch leaves a
+permanent hole in the numbering and the client can see exactly how much it lost. Losing data
+silently would be far worse than losing it.
+
+**The client counts batches, not stalls.** This was wrong until M6: the counter incremented
+once per discontinuity, so a subscriber that lost four hundred batches in one stall was
+reported identically to one that lost a single batch. `droppedSince` now returns
+`next - last - 1`, with tests for the first batch, for a restarted stream that renumbers
+backwards, and for sequence values past `Number.MAX_SAFE_INTEGER`.
+
+### Canvas vs SVG vs WebGL
+
+Canvas ships. SVG is measurable on the same harness — `worker-svg` in the benchmarks panel is
+mode C with ECharts' SVG backend and nothing else changed — so the comparison is a
+measurement rather than an argument.
+
+> **Measurement pending.** See [SVG vs canvas](#svg-vs-canvas) below.
+
+The structural difference: canvas draws a polyline into a bitmap and the browser keeps
+nothing per point. SVG creates retained DOM — a `<path>` whose `d` attribute holds every
+vertex — which the browser must parse, keep in the layout tree, and re-serialise on every
+update. At the ~15,000 points this app draws, canvas touches 15,000 coordinates per frame and
+frees them; SVG rebuilds a path string of comparable length and hands it to the DOM, where it
+lives until replaced. SVG's advantages — crisp at any zoom, hit-testable, inspectable — are
+real, and irrelevant to a line that is replaced thirty times a second.
+
+**WebGL is not warranted here, and it is worth being clear why.** The instinct is that
+millions of points implies GPU. But LTTB already bounds points *rendered* at roughly two per
+pixel — around 15,000 across four channels — regardless of how many are held. A GPU would
+accelerate work that has already been eliminated.
+
+WebGL starts to win when that bound stops holding:
+
+- **Many series at once.** Forty channels rather than four is 150,000 points a frame, and the
+  per-point cost begins to matter however it is rasterised.
+- **Rendering where every point must be drawn**, such as a scatter plot or a density map
+  where overplotting *is* the signal and downsampling would destroy it.
+- **Per-point styling** — colour or size varying by value — which defeats the single-polyline
+  fast path.
+
+The route would be `echarts-gl`, which is not in the stack table and was not added, because
+adding a dependency to solve a problem the architecture already solved is how projects get
+heavy.
+
+### What changes when Project 2 adds historical data
+
+The seam is already in the right place. The main thread does not read samples; it asks for
+`{ startNs, endNs, maxPoints, channelIds }` and receives an already-reduced series. It does
+not know or care that a ring buffer answered.
+
+**Routing.** The ring buffer covers the last ten minutes. Anything older is a query against
+stored Parquet, and a window that straddles the boundary needs both, stitched. That
+boundary is where the interesting bugs would live: duplicate samples at the seam, and the
+fact that stored data is immutable while the live tail is still being written.
+
+**Downsampling moves to the query side, and changes shape.** Reducing in the browser works
+because the data is already there. You cannot ship ten hours of raw samples across the
+network to downsample them at the far end — the reduction has to happen where the data is,
+which means the storage engine.
+
+That is not simply LTTB relocated. LTTB is **sequential**: each bucket's choice depends on
+the point chosen for the previous one, so it does not decompose cleanly across partitions or
+push down into a query engine. The usual answer is min/max-per-time-bucket, which is a plain
+aggregation, parallelises trivially, and preserves spikes by construction — at the cost of a
+line that looks slightly more jagged than LTTB's. Precomputed downsampled tiers (raw, 10 ms,
+1 s, 1 min) are the other half of it: pick the tier whose resolution already matches the
+requested window and the query stops scanning raw data at all.
+
+**What stays.** Ring buffers, LTTB, the worker boundary and the rules engine are all
+live-path concerns and are unaffected. The view request grows a source discriminator and
+the worker grows a code path that awaits a network call instead of slicing an array.
+
+## What M6 changed, and one thing it did not
+
+**The status bar exists** because the two numbers that carry the whole argument — points held
+and points rendered — were previously visible only in a benchmark report. Watching held climb
+past two million while rendered sits at 5,456 is the design explaining itself.
+
+**Channel visibility is applied in the view request**, not the subscription. Re-subscribing
+with a narrower channel list would restart the stream and discard the ring buffers, so
+unticking a channel would destroy its history. Filtering where the data is means the worker
+skips the slice and the downsample for a hidden channel — points rendered falls by a quarter
+per channel, measured — while ingestion and rule evaluation carry on untouched. Tick a
+channel back on and its full ten minutes is there, including any anomaly found while it was
+hidden. There is a test for that combination.
+
+**Mode C's connection indicator was fabricated.** It reported `streaming` whenever the
+renderer was active, without asking whether the worker had connected, so a stopped server
+still showed a healthy dot. The worker already posted `ready` and `error`; the renderer was
+discarding both. It now forwards them, and stopping the server turns the indicator red with
+the transport's own message.
+
+### A change that was reverted
+
+While checking teardown, the server appeared to hold subscribers after pages went away, and
+a plausible cause suggested itself: `Worker.terminate()` is not obliged to cancel a streaming
+fetch the worker has in flight, so the server could go on counting a subscriber with nowhere
+to deliver. A handshake was written — the worker acknowledges the abort, the main thread
+terminates on the acknowledgement with a timeout as backstop.
+
+Then it was tested against the counterfactual: the old teardown restored, three renderer
+swaps, watching the server log. Every swap produced a clean disconnect and reconnect and the
+count never exceeded one. `terminate()` does cancel the fetch. The extra subscribers were a
+second browser tab and streams stranded by navigating a page away, which no React cleanup
+path can reach in any case.
+
+The handshake was reverted. It is recorded here because the sequence is the point: the
+hypothesis was reasonable, the code worked, and it was still wrong to keep, because nothing
+demonstrated the problem it solved.
+
+### Not covered by tests
+
+The extracted components in `web/src/components/` have no unit tests.
+`@testing-library/react` is not in the stack table, and adding a dependency to assert that a
+checkbox renders is a poor trade for what it would catch. They are covered by TypeScript and
+by the manual walkthrough in the README. Everything with logic in it — the rule evaluator,
+the ring buffer, LTTB, the view builder, the slices, the sequence counter, the benchmark
+harness — is tested, which is where the bugs have actually been.
+
+## Measurements
 
 Measurements for the M2 vs M3 comparison. M2 renders naively on the main thread; M3
 replaces it with a worker, ring buffers and LTTB. The value of these numbers depends
@@ -215,6 +477,27 @@ view. Neither figure is alarming at a 12 ms render, and fps never dropped below 
 the cost is not perfectly flat and should not be described as such. Worth confirming directly
 rather than inferring, by logging applied-views-per-second.
 
+## SVG vs canvas
+
+`worker-svg` in the benchmarks panel is mode C with `echarts.init(..., { renderer: "svg" })`
+and no other change — same worker, same ring buffers, same LTTB, same point budget. That is
+what makes the comparison worth anything: one variable moves.
+
+**Not yet measured.** The method, so the numbers mean the same thing as every other figure
+here: 1-minute run in each of `worker` and `worker-svg`, same window size, same machine,
+window left in the foreground, page not touched while running. Compare at matched **points
+rendered**, since that is what either backend actually has to draw. `peakBusyPercent` and
+`maxSingleMs` are the figures to read; fps will likely look similar until one of them
+saturates.
+
+| | Mode C (canvas) | Mode C (SVG) |
+|---|---|---|
+| Points rendered | | |
+| Peak main thread | | |
+| Longest single render | | |
+| fps p50 / min | | |
+| Heap peak | | |
+
 ## Two measurement flaws this work exposed
 
 **A watchdog cannot stop a frozen main thread — and I initially claimed it could.**
@@ -276,16 +559,23 @@ just server        # terminal 1
 just web           # terminal 2
 ```
 
-Open <http://localhost:5173> in a normal browser window, pick a mode, press **Run 10 min**, and
-leave the window in front and untouched. Press **Download JSON** for the full sample series.
-Do not interact with the page while a run is in progress: doing so executes on the very thread
-being measured.
+Open <http://localhost:5173> in a normal browser window — not an embedded pane, which gets
+occluded and invalidates runs. Expand **Benchmarks** at the foot of the page, pick a mode,
+press **Run 10 min**, and leave the window in front and untouched. Press **Download JSON**
+for the full sample series. Do not interact with the page while a run is in progress: doing
+so executes on the very thread being measured.
 
-**An idle page holds no subscription.** The chart is blank until a run starts, and the stream
-closes again the moment one ends — the server's subscriber count returns to zero. Tick **live
-preview when idle** to watch the chart outside a run. This is deliberate: a page that keeps a
-stream open while discarding every batch costs the server 4,000 samples a second for nothing,
-and left a worker quietly filling ring buffers long after a run reported `completed`.
+**An idle page holds no subscription.** The viewer streams on load in mode C and stops the
+moment you press **Disconnect** or switch tabs — the server's subscriber count returns to
+zero, which the server log shows directly. The two naive baselines do not stream unless a run
+is driving them or **feed this baseline when idle** is ticked, because feeding a naive
+renderer continuously degrades the page to unusability within minutes and would leave each run
+starting from whatever the last one left behind.
+
+**The status bar reads live during a run**, and its frame meter keeps running while one is in
+progress rather than deferring to the run's own figure — the status bar ships with the app,
+so measuring the app without it would measure something nobody runs. The cost is one
+timestamp push per frame.
 
 ## What this says about the architecture
 

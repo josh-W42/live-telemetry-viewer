@@ -1,19 +1,22 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConnectError } from "@connectrpc/connect";
+import { Tooltip } from "radix-ui";
 
 import { telemetryClient } from "./client";
 import type { Channel } from "./gen/telemetry/v1/telemetry_pb";
 import {
   BenchRun,
   defaultStopConfig,
+  FrameMeter,
   type RenderMode,
   type RunResult,
 } from "./bench/metrics";
 import { downloadReport, summarize, type Summary } from "./bench/report";
+import { droppedSince } from "./lib/sequence";
 import { AppendRenderer } from "./render/append";
 import { NaiveRenderer } from "./render/naive";
 import { WorkerRenderer } from "./render/worker";
-import type { ChartRenderer } from "./render/types";
+import type { ChartRenderer, ConnectionStatus } from "./render/types";
 import { useAppDispatch, useAppSelector } from "./store";
 import {
   jumpToLive,
@@ -22,23 +25,20 @@ import {
   selectRenderWindow,
   panBy,
   setWindowSize,
-  WINDOW_SIZES,
   zoomBy,
   zoomTo,
 } from "./store/viewSlice";
+import { selectVisibleChannelIds, toggleChannel } from "./store/channelsSlice";
 import { selectAnomaliesNewestFirst, setAnomalies } from "./store/anomaliesSlice";
 import type { Anomaly } from "./worker/rules";
-import { colorFor } from "./render/types";
-
-type Connection = "idle" | "connecting" | "streaming" | "error";
+import { AnomalySidebar } from "./components/AnomalySidebar";
+import { BenchPanel } from "./components/BenchPanel";
+import { ChannelList } from "./components/ChannelList";
+import { StatusBar } from "./components/StatusBar";
+import { ViewControls } from "./components/ViewControls";
+import "./styles.css";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8080";
-
-const modes: { id: RenderMode; label: string; blurb: string }[] = [
-  { id: "naive", label: "A · naive setOption", blurb: "Whole dataset re-sent every batch" },
-  { id: "append", label: "B · appendData", blurb: "Only new points, axis moved 1×/s" },
-  { id: "worker", label: "C · worker + LTTB", blurb: "Ring buffers and downsampling off-thread" },
-];
 
 function makeRenderer(mode: RenderMode): ChartRenderer {
   switch (mode) {
@@ -46,16 +46,31 @@ function makeRenderer(mode: RenderMode): ChartRenderer {
       return new AppendRenderer();
     case "worker":
       return new WorkerRenderer(API_URL);
+    case "worker-svg":
+      return new WorkerRenderer(API_URL, "svg");
     default:
       return new NaiveRenderer();
   }
 }
 
+/** True for the two renderers that are the actual product. */
+function isWorkerMode(mode: RenderMode): boolean {
+  return mode === "worker" || mode === "worker-svg";
+}
+
+/**
+ * The viewer.
+ *
+ * This component owns the wiring — the stream, the renderer's lifetime, and the
+ * round trip from a gesture through the store and back to the chart — and none
+ * of the markup. That split is deliberate: the renderer lifecycle is where the
+ * dispose-and-blank-screen bug lived, so it stays in one place with its
+ * reasoning attached, while everything presentational moved to components/.
+ */
 export function App() {
   const [channels, setChannels] = useState<Channel[]>([]);
-  const [connection, setConnection] = useState<Connection>("connecting");
-  const [error, setError] = useState("");
-  const [mode, setMode] = useState<RenderMode>("naive");
+  const [connection, setConnection] = useState<ConnectionStatus>({ state: "connecting" });
+  const [mode, setMode] = useState<RenderMode>("worker");
 
   // The scripted handle below hands out closures. A caller that grabs
   // window.__telemetryBench before setMode has re-rendered would otherwise start a
@@ -64,9 +79,18 @@ export function App() {
   // window in which that can happen.
   const modeRef = useRef<RenderMode>(mode);
   modeRef.current = mode;
+
   const [running, setRunning] = useState(false);
   const [summary, setSummary] = useState<Summary | null>(null);
-  const [live, setLive] = useState({ batches: 0, gaps: 0, pointsHeld: 0, fps: 0, heapMB: 0 });
+  const [live, setLive] = useState({
+    pointsHeld: 0,
+    pointsRendered: 0,
+    droppedBatches: 0,
+    fps: 0,
+    heapMB: null as number | null,
+    bufferBytes: 0,
+    perChannel: {} as Record<string, number>,
+  });
 
   const chartEl = useRef<HTMLDivElement>(null);
   const renderer = useRef<ChartRenderer | null>(null);
@@ -74,26 +98,32 @@ export function App() {
 
   // Stream counters live in refs: at 20 batches/sec, routing them through state
   // would re-render far faster than anyone can read.
-  const counters = useRef({ batches: 0, gaps: 0, lastSequence: 0n });
+  const counters = useRef({ batches: 0, droppedBatches: 0, lastSequence: 0n });
 
-  // Whether incoming batches reach the renderer at all.
+  // Whether incoming batches reach a *baseline* renderer.
   //
   // Feeding a naive renderer continuously would degrade the page to
-  // unusability within minutes even when nobody is benchmarking, and would
-  // leave each run starting from whatever mess the last one left. Data flows
-  // only during a run, or when preview is deliberately switched on.
+  // unusability within minutes, and would leave each run starting from whatever
+  // mess the last one left. Mode C has no such problem, which is why the viewer
+  // simply streams.
   const feeding = useRef(false);
-  const [preview, setPreview] = useState(false);
+  const [previewWhenIdle, setPreviewWhenIdle] = useState(false);
 
-  // --- view window (Redux) ------------------------------------------------
-  //
-  // The only state in the store. Telemetry never passes through here: the
-  // worker holds 2.4M samples and hands the main thread a few thousand
-  // downsampled points that go straight to ECharts.
+  /** The viewer's own connect/disconnect. Worker modes only. */
+  const [connected, setConnected] = useState(true);
+
   const dispatch = useAppDispatch();
   const view = useAppSelector((s) => s.view);
   const renderWindow = selectRenderWindow(view);
   const isLive = view.window.kind === "live";
+
+  const channelsState = useAppSelector((s) => s.channels);
+  const allChannelIds = useMemo(() => channels.map((c) => c.id), [channels]);
+  const visibleChannelIds = useMemo(
+    () => selectVisibleChannelIds(channelsState, allChannelIds),
+    [channelsState, allChannelIds],
+  );
+
   const anomaliesState = useAppSelector((s) => s.anomalies);
   const anomalies = anomaliesState.items;
   const anomalyList = selectAnomaliesNewestFirst(anomaliesState);
@@ -103,8 +133,8 @@ export function App() {
   // Waiting for the per-sample visibility check does not work: the sampler is a
   // main-thread setInterval, which browsers throttle to roughly once a minute in
   // a background tab and may freeze outright. A worker is throttled even less,
-  // so in mode C the ring buffers would keep filling at the full 4,000 samples a
-  // second while nobody is watching. Reacting to the event closes that window.
+  // so the ring buffers would keep filling at the full 4,000 samples a second
+  // while nobody is watching. Reacting to the event closes that window.
   const [pageVisible, setPageVisible] = useState(
     typeof document === "undefined" || !document.hidden,
   );
@@ -125,10 +155,11 @@ export function App() {
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, []);
 
-  // Nothing streams unless something is consuming: a benchmark run, or an
-  // explicitly enabled live preview — and in either case, only while the tab is
-  // actually on screen.
-  const active = (running || preview) && pageVisible;
+  // Nothing streams unless something is consuming, and only while the tab is
+  // actually on screen. For the viewer that means the connect toggle; for the
+  // baselines, an explicit opt-in or a benchmark run.
+  const wantsStream = isWorkerMode(mode) ? connected : previewWhenIdle;
+  const active = (running || wantsStream) && pageVisible;
 
   // --- channel metadata ---------------------------------------------------
   // Cheap unary call, needed by every mode to lay out the chart.
@@ -139,28 +170,22 @@ export function App() {
       .then((res) => setChannels(res.channels))
       .catch((err: unknown) => {
         if (abort.signal.aborted) return;
-        setConnection("error");
-        setError(ConnectError.from(err).message);
+        setConnection({ state: "error", message: ConnectError.from(err).message });
       });
     return () => abort.abort();
   }, []);
 
-  // --- main-thread stream (modes A and B only) ----------------------------
+  // --- main-thread stream (baselines only) --------------------------------
   //
-  // Mode C's worker opens its own stream. If this one stayed open alongside it,
-  // the main thread would still be deserialising twenty batches a second, which
-  // is exactly the cost mode C exists to remove - and the measurement would be
-  // worthless.
+  // A worker-backed renderer opens its own stream. If this one stayed open
+  // alongside it, the main thread would still be deserialising twenty batches a
+  // second, which is exactly the cost mode C exists to remove — and the
+  // measurement would be worthless.
   useEffect(() => {
-    if (mode === "worker") {
-      setConnection(active ? "streaming" : "idle");
-      return;
-    }
+    if (isWorkerMode(mode)) return; // the renderer reports its own state
 
-    // No subscription while nothing is consuming. Otherwise the server keeps
-    // pushing 4,000 samples a second at a client that discards every one.
     if (!active) {
-      setConnection("idle");
+      setConnection({ state: "idle" });
       return;
     }
 
@@ -169,11 +194,11 @@ export function App() {
     void (async () => {
       try {
         const stream = telemetryClient.streamTelemetry({}, { signal: abort.signal });
-        setConnection("streaming");
+        setConnection({ state: "streaming" });
 
         for await (const batch of stream) {
           const c = counters.current;
-          if (c.lastSequence !== 0n && batch.sequence !== c.lastSequence + 1n) c.gaps += 1;
+          c.droppedBatches += droppedSince(c.lastSequence, batch.sequence);
           c.lastSequence = batch.sequence;
           c.batches += 1;
 
@@ -186,13 +211,35 @@ export function App() {
         }
       } catch (err) {
         if (abort.signal.aborted) return;
-        setConnection("error");
-        setError(ConnectError.from(err).message);
+        setConnection({ state: "error", message: ConnectError.from(err).message });
       }
     })();
 
     return () => abort.abort();
   }, [mode, active]);
+
+  /**
+   * Attach the callbacks a renderer reports through.
+   *
+   * Done at construction rather than in a later effect because effects run in
+   * declaration order: the one that calls `setActive` would otherwise fire
+   * first, and the renderer's opening status would be reported to nobody.
+   */
+  const attach = useCallback(
+    (r: ChartRenderer) => {
+      r.onStatus(setConnection);
+      r.onAnomalies((list) => dispatch(setAnomalies(list)));
+      r.onGesture((g) => {
+        const at = { nowMs: Date.now(), retentionMs: RETENTION_MS };
+        dispatch(
+          g.kind === "zoom"
+            ? zoomBy({ ...at, factor: g.factor, anchorFraction: g.anchorFraction })
+            : panBy({ ...at, fraction: g.fraction }),
+        );
+      });
+    },
+    [dispatch],
+  );
 
   // --- renderer lifecycle -------------------------------------------------
   useEffect(() => {
@@ -200,6 +247,7 @@ export function App() {
 
     const r = makeRenderer(mode);
     r.init(chartEl.current, channels);
+    attach(r);
     renderer.current = r;
 
     const onResize = () => r.resize();
@@ -210,22 +258,7 @@ export function App() {
       renderer.current = null;
       r.dispose();
     };
-  }, [mode, channels]);
-
-  // --- live readout -------------------------------------------------------
-  useEffect(() => {
-    const id = setInterval(() => {
-      const latest = run.current?.samples.at(-1);
-      setLive({
-        batches: counters.current.batches,
-        gaps: counters.current.gaps,
-        pointsHeld: renderer.current?.pointsHeld() ?? 0,
-        fps: Math.round(latest?.fps ?? 0),
-        heapMB: Math.round(latest?.heapMB ?? 0),
-      });
-    }, 500);
-    return () => clearInterval(id);
-  }, []);
+  }, [mode, channels, attach]);
 
   // Renderers that own a stream start and stop with `active`. Declared after
   // the lifecycle effect above so a mode switch creates the renderer first and
@@ -234,26 +267,12 @@ export function App() {
     renderer.current?.setActive(active);
   }, [active, mode, channels]);
 
-  // Push the window down, and route zoom gestures back up into the store.
-  //
-  // The renderer reports what the user did; the store decides what it means.
-  // That is what makes "zooming while live pauses" a single reducer transition
-  // rather than two effects racing each other.
+  // Push the window down. The renderer reports what the user did; the store
+  // decides what it means. That is what makes "zooming while live pauses" a
+  // single reducer transition rather than two effects racing each other.
   useEffect(() => {
-    const r = renderer.current;
-    if (!r) return;
-
-    r.onGesture((g) => {
-      const at = { nowMs: Date.now(), retentionMs: RETENTION_MS };
-      dispatch(
-        g.kind === "zoom"
-          ? zoomBy({ ...at, factor: g.factor, anchorFraction: g.anchorFraction })
-          : panBy({ ...at, fraction: g.fraction }),
-      );
-    });
-    r.onAnomalies((list) => dispatch(setAnomalies(list)));
-    r.setWindow(renderWindow);
-  }, [renderWindow, mode, channels, dispatch]);
+    renderer.current?.setWindow(renderWindow);
+  }, [renderWindow, mode, channels]);
 
   // Anomalies make the same round trip as the window: the worker reports them,
   // the store owns them, and the renderer draws whatever the store holds. That
@@ -261,6 +280,39 @@ export function App() {
   useEffect(() => {
     renderer.current?.setAnomalies(anomalies);
   }, [anomalies, mode, channels]);
+
+  useEffect(() => {
+    renderer.current?.setVisibleChannels(visibleChannelIds);
+  }, [visibleChannelIds, mode, channels]);
+
+  // --- continuous frame rate ----------------------------------------------
+  //
+  // The status bar needs fps whether or not a benchmark is running, and this is
+  // the only thing that measures it outside a run.
+  const frames = useRef(new FrameMeter());
+  useEffect(() => {
+    const meter = frames.current;
+    if (active) meter.start();
+    else meter.stop();
+    return () => meter.stop();
+  }, [active]);
+
+  // --- live readout -------------------------------------------------------
+  useEffect(() => {
+    const id = setInterval(() => {
+      const r = renderer.current;
+      setLive({
+        pointsHeld: r?.pointsHeld() ?? 0,
+        pointsRendered: r?.pointsRendered() ?? 0,
+        droppedBatches: r?.streamStats?.().droppedBatches ?? counters.current.droppedBatches,
+        fps: frames.current.fps(),
+        heapMB: readHeap(),
+        bufferBytes: (r as WorkerRenderer | null)?.bufferBytes ?? 0,
+        perChannel: r?.heldPerChannel?.() ?? {},
+      });
+    }, 500);
+    return () => clearInterval(id);
+  }, []);
 
   /** Jump the view to an anomaly, padded so a 30ms spike lands in context. */
   const showAnomaly = useCallback(
@@ -280,17 +332,17 @@ export function App() {
 
   // Preview follows the checkbox whenever a run is not driving it.
   useEffect(() => {
-    if (!running) feeding.current = preview;
-  }, [preview, running]);
+    if (!running) feeding.current = previewWhenIdle;
+  }, [previewWhenIdle, running]);
 
   const stopBench = useCallback(() => {
     const r = run.current;
     if (!r) return;
     r.stop();
-    feeding.current = preview;
+    feeding.current = previewWhenIdle;
     setSummary(summarize(r.result()));
     setRunning(false);
-  }, [preview]);
+  }, [previewWhenIdle]);
 
   const startBench = useCallback(
     (durationMs: number) => {
@@ -301,12 +353,14 @@ export function App() {
         renderer.current?.dispose();
         const fresh = makeRenderer(modeRef.current);
         fresh.init(chartEl.current, channels);
+        attach(fresh);
+        fresh.setVisibleChannels(visibleChannelIds);
         // Activated here rather than waiting for the effect below to fire on
         // the next render, so the stream is open before the first sample.
         fresh.setActive(true);
         renderer.current = fresh;
       }
-      counters.current = { batches: 0, gaps: 0, lastSequence: 0n };
+      counters.current = { batches: 0, droppedBatches: 0, lastSequence: 0n };
       renderer.current?.takeRenderStats(); // discard anything accumulated while idle
 
       const bench = new BenchRun(
@@ -317,14 +371,16 @@ export function App() {
           // A worker-backed renderer counts its own batches, since they never
           // reach this thread.
           batches: () => renderer.current?.streamStats?.().batches ?? counters.current.batches,
-          gaps: () => renderer.current?.streamStats?.().gaps ?? counters.current.gaps,
+          droppedBatches: () =>
+            renderer.current?.streamStats?.().droppedBatches ??
+            counters.current.droppedBatches,
           takePushStats: () =>
             renderer.current?.takeRenderStats() ?? { totalMs: 0, maxMs: 0 },
         },
         { ...defaultStopConfig, durationMs },
         (r) => {
           if (r.status !== "running") {
-            feeding.current = preview;
+            feeding.current = previewWhenIdle;
             setSummary(summarize(r.result()));
             setRunning(false);
           }
@@ -339,12 +395,12 @@ export function App() {
 
       // start() refuses to run in a hidden tab; reflect that immediately.
       if (bench.status !== "running") {
-        feeding.current = preview;
+        feeding.current = previewWhenIdle;
         setSummary(summarize(bench.result()));
         setRunning(false);
       }
     },
-    [mode, channels, preview],
+    [channels, previewWhenIdle, attach, visibleChannelIds],
   );
 
   // Expose the harness so results can be captured by script rather than
@@ -371,258 +427,92 @@ export function App() {
     (window as unknown as { __telemetryView: unknown }).__telemetryView = {
       ...view,
       spanMs,
+      visibleChannelIds,
     };
-  }, [view]);
+  }, [view, visibleChannelIds]);
 
-  const busy = running;
+  const workerMode = isWorkerMode(mode);
 
   return (
-    <main style={styles.main}>
-      <header style={styles.header}>
-        <h1 style={styles.h1}>M2 naive chart</h1>
-        <span style={styles.dim}>
-          {connection === "streaming" ? "streaming" : connection}
-          {connection === "error" && `: ${error}`}
-        </span>
-      </header>
-
-      <section style={styles.controls}>
-        <div style={styles.modes}>
-          {modes.map((m) => (
-            <button
-              key={m.id}
-              onClick={() => setMode(m.id)}
-              disabled={busy}
-              title={m.blurb}
-              style={{ ...styles.modeBtn, ...(mode === m.id ? styles.modeBtnOn : {}) }}
-            >
-              {m.label}
-            </button>
-          ))}
-        </div>
-
-        <div style={styles.runBtns}>
-          <button onClick={() => startBench(60_000)} disabled={busy} style={styles.btn}>
-            Run 1 min
-          </button>
-          <button onClick={() => startBench(600_000)} disabled={busy} style={styles.btn}>
-            Run 10 min
-          </button>
-          <button onClick={stopBench} disabled={!busy} style={styles.btn}>
-            Stop
-          </button>
-          <button
-            onClick={() => run.current && downloadReport(run.current.result())}
-            disabled={!run.current}
-            style={styles.btn}
-          >
-            Download JSON
-          </button>
-        </div>
-
-        <label style={styles.dim}>
-          <input
-            type="checkbox"
-            checked={preview}
-            disabled={busy}
-            onChange={(e) => setPreview(e.target.checked)}
-          />{" "}
-          live preview when idle
-        </label>
-      </section>
-
-      {/* Interaction is mode C only: the M2 baselines are frozen references
-          whose numbers must stay comparable to what is in NOTES.md. */}
-      {mode === "worker" && (
-        <section style={styles.controls}>
-          <button
-            onClick={() => dispatch(isLive ? pause({ nowMs: Date.now() }) : jumpToLive())}
-            style={{ ...styles.btn, ...(isLive ? {} : styles.btnWarn) }}
-          >
-            {isLive ? "❚❚ Pause" : "▶ Resume"}
-          </button>
-
-          <div style={styles.modes}>
-            {WINDOW_SIZES.map((w) => (
-              <button
-                key={w.ms}
-                onClick={() => dispatch(setWindowSize(w.ms))}
-                style={{
-                  ...styles.modeBtn,
-                  ...(isLive && view.durationMs === w.ms ? styles.modeBtnOn : {}),
-                }}
-              >
-                {w.label}
-              </button>
-            ))}
-          </div>
-
-          <button onClick={() => dispatch(jumpToLive())} disabled={isLive} style={styles.btn}>
-            Jump to live
-          </button>
-
-          <span style={styles.dim}>
-            {isLive ? "following live · scroll to zoom" : "paused · ingestion continues"}
+    <Tooltip.Provider delayDuration={200}>
+      <main className="app">
+        <header className="app-header">
+          <h1 className="app-title">Live telemetry viewer</h1>
+          <span className="app-subtitle">
+            4 channels @ 1 kHz · 10 minutes retained
+            {connection.state === "error" && ` · ${connection.message ?? "error"}`}
           </span>
-        </section>
-      )}
 
-      <section style={styles.stats}>
-        <Stat label="mode" value={mode} />
-        <Stat label="fps" value={String(live.fps)} warn={running && live.fps > 0 && live.fps < 20} />
-        <Stat label="heap MB" value={String(live.heapMB)} />
-        <Stat label="points held" value={live.pointsHeld.toLocaleString()} />
-        <Stat label="batches" value={live.batches.toLocaleString()} />
-        <Stat label="gaps" value={String(live.gaps)} warn={live.gaps > 0} />
-      </section>
+          {workerMode && (
+            <button
+              type="button"
+              className="btn"
+              style={{ marginLeft: "auto" }}
+              data-variant={connected ? undefined : "primary"}
+              onClick={() => setConnected((c) => !c)}
+            >
+              {connected ? "Disconnect" : "Connect"}
+            </button>
+          )}
+        </header>
 
-      <div style={styles.chartRow}>
-        <div ref={chartEl} style={styles.chart} />
+        <StatusBar
+          connection={connection}
+          pointsHeld={live.pointsHeld}
+          pointsRendered={live.pointsRendered}
+          fps={live.fps}
+          droppedBatches={live.droppedBatches}
+          heapMB={live.heapMB}
+          bufferBytes={live.bufferBytes}
+        />
 
-        {mode === "worker" && (
-          <aside style={styles.sidebar}>
-            <div style={styles.statLabel}>anomalies ({anomalyList.length})</div>
-
-            {anomalyList.length === 0 ? (
-              <p style={styles.dim}>
-                none yet — the rig injects a pressure spike into every steady-state phase
-              </p>
-            ) : (
-              <ul style={styles.anomalyList}>
-                {anomalyList.map((a) => (
-                  <li key={a.id}>
-                    <button onClick={() => showAnomaly(a)} style={styles.anomalyBtn}>
-                      <span style={{ ...styles.swatch, background: colorFor(a.channelId) }} />
-                      <span style={styles.anomalyLabel}>
-                        {a.label}
-                        {a.open && <em style={styles.ongoing}> ongoing</em>}
-                      </span>
-                      <span style={styles.dim}>
-                        {new Date(a.startMs).toLocaleTimeString()} ·{" "}
-                        {Math.round(a.endMs - a.startMs)} ms · peak {a.peak.toFixed(1)}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </aside>
+        {/* Interaction is worker-mode only: the M2 baselines are frozen
+            references whose numbers must stay comparable to NOTES.md. */}
+        {workerMode && (
+          <ViewControls
+            isLive={isLive}
+            durationMs={view.durationMs}
+            onPause={() => dispatch(pause({ nowMs: Date.now() }))}
+            onResume={() => dispatch(jumpToLive())}
+            onWindowSize={(ms) => dispatch(setWindowSize(ms))}
+          />
         )}
-      </div>
 
-      {summary && (
-        <section style={styles.summary}>
-          <strong>
-            {summary.mode} — {summary.status}
-            {summary.reason ? `: ${summary.reason}` : ""}
-          </strong>
-          <pre style={styles.pre}>{JSON.stringify(summary, null, 2)}</pre>
-        </section>
-      )}
-    </main>
+        <div className="chart-row">
+          <div ref={chartEl} className="chart" />
+
+          {workerMode && (
+            <div className="side">
+              <ChannelList
+                channels={channels}
+                visible={visibleChannelIds}
+                heldPerChannel={live.perChannel}
+                onToggle={(id) => dispatch(toggleChannel(id))}
+              />
+              <AnomalySidebar anomalies={anomalyList} onShow={showAnomaly} />
+            </div>
+          )}
+        </div>
+
+        <BenchPanel
+          mode={mode}
+          onModeChange={setMode}
+          running={running}
+          onRun={startBench}
+          onStop={stopBench}
+          onDownload={() => run.current && downloadReport(run.current.result())}
+          hasResult={run.current !== null}
+          summary={summary}
+          previewWhenIdle={previewWhenIdle}
+          onPreviewChange={setPreviewWhenIdle}
+        />
+      </main>
+    </Tooltip.Provider>
   );
 }
 
-function Stat({ label, value, warn }: { label: string; value: string; warn?: boolean }) {
-  return (
-    <div style={styles.stat}>
-      <div style={styles.statLabel}>{label}</div>
-      <div style={{ ...styles.statValue, color: warn ? "#b45309" : "#111" }}>{value}</div>
-    </div>
-  );
+/** Non-standard and Chromium-only; the status bar shows a dash without it. */
+function readHeap(): number | null {
+  const mem = (performance as { memory?: { usedJSHeapSize: number } }).memory;
+  return typeof mem?.usedJSHeapSize === "number" ? mem.usedJSHeapSize / 1048576 : null;
 }
-
-const styles: Record<string, React.CSSProperties> = {
-  main: {
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-    padding: "1.25rem",
-    lineHeight: 1.5,
-  },
-  header: { display: "flex", alignItems: "baseline", gap: "1rem", flexWrap: "wrap" },
-  h1: { fontSize: "1rem", margin: 0 },
-  controls: {
-    display: "flex",
-    gap: "1rem",
-    flexWrap: "wrap",
-    margin: "0.75rem 0",
-    alignItems: "center",
-  },
-  modes: { display: "flex", gap: "0.25rem" },
-  runBtns: { display: "flex", gap: "0.25rem" },
-  modeBtn: {
-    font: "inherit",
-    fontSize: "0.75rem",
-    padding: "0.3rem 0.6rem",
-    border: "1px solid #ccc",
-    background: "#fff",
-    borderRadius: 4,
-    cursor: "pointer",
-  },
-  // These overlays use the `border` shorthand rather than `borderColor`.
-  // Mixing a shorthand with a longhand for the same property across renders
-  // makes React warn, because removing one leaves the other's value behind.
-  modeBtnOn: { background: "#111", color: "#fff", border: "1px solid #111" },
-  btnWarn: { border: "1px solid #b45309", color: "#b45309" },
-  btn: {
-    font: "inherit",
-    fontSize: "0.75rem",
-    padding: "0.3rem 0.6rem",
-    border: "1px solid #ccc",
-    background: "#fff",
-    borderRadius: 4,
-    cursor: "pointer",
-  },
-  stats: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(8rem, 1fr))",
-    gap: "0.5rem",
-    marginBottom: "0.75rem",
-  },
-  stat: { border: "1px solid #e5e5e5", borderRadius: 6, padding: "0.35rem 0.6rem" },
-  statLabel: { fontSize: "0.65rem", textTransform: "uppercase", color: "#666" },
-  statValue: { fontSize: "1rem", fontVariantNumeric: "tabular-nums" },
-  chartRow: { display: "flex", gap: "0.75rem", alignItems: "stretch", flexWrap: "wrap" },
-  chart: {
-    flex: "1 1 32rem",
-    minWidth: "20rem",
-    height: "26rem",
-    border: "1px solid #e5e5e5",
-    borderRadius: 6,
-  },
-  sidebar: {
-    flex: "0 1 18rem",
-    minWidth: "14rem",
-    height: "26rem",
-    overflowY: "auto",
-    border: "1px solid #e5e5e5",
-    borderRadius: 6,
-    padding: "0.5rem 0.6rem",
-  },
-  anomalyList: {
-    listStyle: "none",
-    margin: "0.4rem 0 0",
-    padding: 0,
-    display: "grid",
-    gap: "0.3rem",
-  },
-  anomalyBtn: {
-    font: "inherit",
-    fontSize: "0.72rem",
-    textAlign: "left",
-    width: "100%",
-    display: "grid",
-    gridTemplateColumns: "auto 1fr",
-    columnGap: "0.4rem",
-    padding: "0.35rem 0.4rem",
-    border: "1px solid #e5e5e5",
-    borderRadius: 4,
-    background: "#fff",
-    cursor: "pointer",
-  },
-  swatch: { width: 6, borderRadius: 2, gridRow: "1 / span 2" },
-  anomalyLabel: { fontWeight: 600 },
-  ongoing: { color: "#b45309", fontWeight: 400 },
-  summary: { marginTop: "0.75rem", fontSize: "0.75rem" },
-  pre: { background: "#fafafa", padding: "0.6rem", borderRadius: 6, overflowX: "auto" },
-  dim: { color: "#666", fontSize: "0.8rem" },
-};

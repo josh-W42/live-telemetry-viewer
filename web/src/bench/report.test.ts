@@ -13,7 +13,7 @@ function sampleAt(t: number, over: Partial<Sample> = {}): Sample {
     pointsHeld: 0,
     pointsRendered: 0,
     batches: 0,
-    gaps: 0,
+    droppedBatches: 0,
     visible: true,
     frames: 60,
     pushMsTotal: 0,

@@ -21,7 +21,8 @@ export interface Sample {
   /** Points actually handed to the chart. */
   pointsRendered: number;
   batches: number;
-  gaps: number;
+  /** Batches the server sent that never reached us. */
+  droppedBatches: number;
   /**
    * Whether the page was visible for this sample. A hidden tab runs no
    * animation frames, so fps reads 0 no matter how healthy the renderer is.
@@ -48,7 +49,12 @@ export interface Sample {
  */
 export type RunStatus = "running" | "completed" | "failed" | "invalid";
 
-export type RenderMode = "naive" | "append" | "worker";
+/**
+ * `worker-svg` is mode C with ECharts' SVG backend instead of canvas. It is a
+ * mode of its own rather than a flag so a downloaded report says which backend
+ * produced it — a number quoted in a write-up should carry its own provenance.
+ */
+export type RenderMode = "naive" | "append" | "worker" | "worker-svg";
 
 export interface StopConfig {
   durationMs: number;
@@ -92,6 +98,65 @@ export function fpsFromFrameTimes(times: number[]): number {
   if (elapsedSec <= 0) return 0;
 
   return (times.length - 1) / elapsedSec;
+}
+
+/**
+ * Continuous frame rate, for the status bar.
+ *
+ * `BenchRun` measures fps too, but only while a run is in progress, and the
+ * status bar has to read something the rest of the time. This keeps a trailing
+ * window of frame timestamps and reports the rate across it.
+ *
+ * It stays running during a benchmark rather than deferring to the run's own
+ * figure, because the status bar ships with the app: measuring the app without
+ * it would measure something that is not what anyone runs. The cost is one
+ * timestamp push per frame.
+ */
+export class FrameMeter {
+  private times: number[] = [];
+  private handle = 0;
+  private running = false;
+
+  /** @param windowMs how far back the reported rate averages over. */
+  constructor(private readonly windowMs = 1000) {}
+
+  start(): void {
+    if (this.running) return;
+    this.running = true;
+
+    const tick = (now: number) => {
+      this.times.push(now);
+      this.trim(now);
+      this.handle = requestAnimationFrame(tick);
+    };
+    this.handle = requestAnimationFrame(tick);
+  }
+
+  stop(): void {
+    this.running = false;
+    if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(this.handle);
+    this.handle = 0;
+    this.times = [];
+  }
+
+  /** Frames per second over the trailing window, or 0 before two frames land. */
+  fps(): number {
+    return fpsFromFrameTimes(this.times);
+  }
+
+  /** Feed a timestamp directly. Exists so the trailing window can be tested. */
+  record(now: number): void {
+    this.times.push(now);
+    this.trim(now);
+  }
+
+  private trim(now: number): void {
+    const cutoff = now - this.windowMs;
+    // Timestamps only ever arrive in order, so the stale ones are a prefix.
+    let drop = 0;
+    while (drop < this.times.length && this.times[drop]! < cutoff) drop++;
+    if (drop > 0) this.times = this.times.slice(drop);
+  }
 }
 
 /** Shape of the non-standard, Chromium-only performance.memory. */
@@ -197,7 +262,7 @@ export interface CounterSource {
   pointsHeld(): number;
   pointsRendered(): number;
   batches(): number;
-  gaps(): number;
+  droppedBatches(): number;
   /**
    * Time spent inside renderer.push since the last call, and the longest single
    * push, in milliseconds. Reading resets the accumulator.
@@ -290,7 +355,7 @@ export class BenchRun {
       pointsHeld: this.counters.pointsHeld(),
       pointsRendered: this.counters.pointsRendered(),
       batches: this.counters.batches(),
-      gaps: this.counters.gaps(),
+      droppedBatches: this.counters.droppedBatches(),
       visible: typeof document === "undefined" || !document.hidden,
       frames: this.frameTimes.length,
       pushMsTotal: push.totalMs,

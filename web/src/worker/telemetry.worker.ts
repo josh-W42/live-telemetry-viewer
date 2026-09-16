@@ -16,15 +16,11 @@ import { createClient } from "@connectrpc/connect";
 import { createConnectTransport } from "@connectrpc/connect-web";
 
 import { TelemetryService } from "../gen/telemetry/v1/telemetry_pb";
-import { lttb } from "../lib/lttb";
-import type {
-  ChannelMeta,
-  ChannelView,
-  ViewRequest,
-  WorkerRequest,
-} from "./protocol";
+import { droppedSince } from "../lib/sequence";
+import type { ChannelMeta, ViewRequest, WorkerRequest } from "./protocol";
 import { RingBuffer } from "./ringbuffer";
 import { DEFAULT_RULES, RuleEvaluator } from "./rules";
+import { buildView } from "./view";
 
 const ctx = self as DedicatedWorkerGlobalScope;
 
@@ -39,7 +35,7 @@ let evaluator = new RuleEvaluator(DEFAULT_RULES);
 let retentionMs = 600_000;
 
 let batches = 0;
-let gaps = 0;
+let droppedBatches = 0;
 let lastSequence = 0n;
 
 ctx.onmessage = (event: MessageEvent<WorkerRequest>) => {
@@ -86,7 +82,7 @@ function reportStats(): void {
     perChannel,
     bytes,
     batches,
-    gaps,
+    droppedBatches,
     anomalies: evaluator.anomalies(nowNs, retentionMs),
   });
 }
@@ -127,7 +123,7 @@ async function start(baseUrl: string, capacity: number, channelIds: string[]): P
     retentionMs = (capacity / (channels[0]?.sampleRateHz ?? 1000)) * 1000;
 
     batches = 0;
-    gaps = 0;
+    droppedBatches = 0;
     lastSequence = 0n;
 
     ctx.postMessage({ type: "ready", channels, baseNs });
@@ -143,7 +139,7 @@ async function start(baseUrl: string, capacity: number, channelIds: string[]): P
     const stream = client.streamTelemetry({ channelIds }, { signal: controller.signal });
 
     for await (const batch of stream) {
-      if (lastSequence !== 0n && batch.sequence !== lastSequence + 1n) gaps += 1;
+      droppedBatches += droppedSince(lastSequence, batch.sequence);
       lastSequence = batch.sequence;
       batches += 1;
 
@@ -166,39 +162,17 @@ function stop(): void {
   abort = null;
 }
 
-/**
- * Slice each channel to the requested window and downsample it.
- *
- * The output arrays are freshly allocated, so their buffers can be transferred
- * rather than copied. Transferring neuters the sender's copy — which is exactly
- * why the ring buffers themselves are never handed over.
- */
+/** Slice, downsample and post one view. The work itself lives in view.ts. */
 function respondToView(req: ViewRequest): void {
   const started = performance.now();
 
-  const views: ChannelView[] = [];
-  let pointsHeld = 0;
-  let pointsRendered = 0;
+  const built = buildView(channels, buffers, req);
 
-  for (const channel of channels) {
-    const buf = buffers.get(channel.id);
-    if (!buf) continue;
-
-    pointsHeld += buf.length;
-
-    const slice = buf.sliceByTime(req.startNs, req.endNs);
-    const reduced = lttb(slice.timestamps, slice.values, req.maxPoints);
-
-    pointsRendered += reduced.values.length;
-    views.push({
-      channelId: channel.id,
-      timestamps: reduced.timestamps,
-      values: reduced.values,
-    });
-  }
-
+  // Every returned array was freshly allocated by LTTB, so the buffers can be
+  // transferred rather than copied. Transferring neuters the sender's copy —
+  // which is exactly why the ring buffers themselves are never handed over.
   const transfer: ArrayBuffer[] = [];
-  for (const v of views) {
+  for (const v of built.channels) {
     transfer.push(v.timestamps.buffer as ArrayBuffer, v.values.buffer as ArrayBuffer);
   }
 
@@ -207,11 +181,11 @@ function respondToView(req: ViewRequest): void {
       type: "view",
       id: req.id,
       baseNs,
-      channels: views,
-      pointsHeld,
-      pointsRendered,
+      channels: built.channels,
+      pointsHeld: built.pointsHeld,
+      pointsRendered: built.pointsRendered,
       batches,
-      gaps,
+      droppedBatches,
       workerMs: performance.now() - started,
     },
     transfer,

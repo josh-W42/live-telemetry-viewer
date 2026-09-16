@@ -6,6 +6,7 @@ import {
   nsToMs,
   RenderTimer,
   type ChartRenderer,
+  type ConnectionStatus,
   type ViewGesture,
 } from "./types";
 import type { Anomaly } from "../worker/rules";
@@ -112,6 +113,17 @@ export class AppendRenderer implements ChartRenderer {
 
   setAnomalies(_anomalies: Anomaly[]): void {
     void _anomalies;
+  }
+
+  // No view request to carry a channel filter, and no reason to give them one:
+  // changing what the baselines draw would change what M2 measured.
+  setVisibleChannels(_channelIds: string[]): void {
+    void _channelIds;
+  }
+
+  // The app owns these renderers' stream, so it already knows its state.
+  onStatus(_handler: (status: ConnectionStatus) => void): void {
+    void _handler;
   }
 
   // This renderer does not own a stream; App gates what reaches push().

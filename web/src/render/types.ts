@@ -67,6 +67,25 @@ export interface ChartRenderer {
   /** Anomalies to shade on the chart. */
   setAnomalies(anomalies: Anomaly[]): void;
 
+  /**
+   * Which channels the user wants drawn.
+   *
+   * Honoured only by the worker-backed renderer, which passes the list down in
+   * its view request so the filtering happens where the data is. The two
+   * baselines ignore it: they have no view request to put it in, and changing
+   * what they draw would change what M2 measured.
+   */
+  setVisibleChannels(channelIds: string[]): void;
+
+  /**
+   * Report the state of the renderer's own connection.
+   *
+   * Only a renderer that owns its data source has one to report. Before this
+   * existed the app simply assumed mode C was streaming whenever it was active,
+   * so a stopped server still showed a healthy indicator.
+   */
+  onStatus(handler: (status: ConnectionStatus) => void): void;
+
   /** Called once per incoming batch. Ignored when ownsDataSource is true. */
   push(batch: TelemetryBatch): void;
   /** Points currently retained in memory. */
@@ -87,10 +106,27 @@ export interface ChartRenderer {
   takeRenderStats(): { totalMs: number; maxMs: number };
 
   /** Stream counters, for renderers that own their own data source. */
-  streamStats?(): { batches: number; gaps: number };
+  streamStats?(): { batches: number; droppedBatches: number };
+
+  /** Retained samples per channel, for renderers that retain anything. */
+  heldPerChannel?(): Record<string, number>;
 
   resize(): void;
   dispose(): void;
+}
+
+/**
+ * What the status indicator shows.
+ *
+ * `connecting` covers the unary ListChannels call as well as opening the
+ * stream; `streaming` means batches are actually arriving.
+ */
+export type ConnectionState = "idle" | "connecting" | "streaming" | "error";
+
+export interface ConnectionStatus {
+  state: ConnectionState;
+  /** Set only on `error`. */
+  message?: string;
 }
 
 /** Accumulates main-thread render time. Shared by all three renderers. */

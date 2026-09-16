@@ -6,19 +6,57 @@ A Go service that streams simulated rocket-engine test-stand telemetry over
 Connect/gRPC, and a React + TypeScript app that plots it live while staying
 smooth at millions of points.
 
-See [SPEC.md](SPEC.md) for the full design and milestone plan.
+See [SPEC.md](SPEC.md) for the full design and milestone plan, and
+[NOTES.md](NOTES.md) for the design decisions and the performance measurements
+behind them.
 
-**Current milestone: M0 — scaffold and codegen.** The transport works end to
-end; the RPCs themselves are stubs that return `Unimplemented`. M1 adds the
-simulator and real streaming.
+**All milestones complete (M0–M6).** Four channels at 1 kHz stream from Go into
+a Web Worker, which holds ten minutes in fixed ring buffers, downsamples each
+visible window with LTTB, and evaluates threshold rules on every sample. The
+main thread only ever sees a few thousand already-reduced points.
+
+Measured: 2,399,800 points held at 120 fps with zero long tasks, against a naive
+main-thread chart that saturates at 85,600 points in 22 seconds.
+
+## The app
+
+Open <http://localhost:5173> and it streams.
+
+- **Chart** — four channels on a shared time axis, two y-axes because psi/K and
+  g/(kg·s⁻¹) differ by orders of magnitude. Scroll to zoom, drag to pan; zooming
+  while live pins the window, which is the same state as paused.
+- **Status bar** — connection, points held, points rendered, render fps, dropped
+  batches, heap. Each carries a tooltip explaining what it means. Watching
+  *points held* climb to 2.4M while *points rendered* stays put is the whole
+  architecture in two numbers.
+- **Channels** — checkboxes. Unticking one stops it being drawn but not being
+  recorded, so its history and any anomaly found while it was hidden are there
+  when you tick it back on.
+- **Anomalies** — threshold rules evaluated in the worker on ingestion, so they
+  see every sample rather than the 0.6% that survives downsampling. Detected
+  excursions are shaded on the chart; clicking one jumps the view to it.
+- **Benchmarks** — folded away at the bottom. The M2 baselines and the
+  measurement harness that produced every number in `NOTES.md`.
+
+**An idle or hidden page holds no subscription.** Disconnect, or switch tabs,
+and the server's subscriber count returns to zero — a page that keeps a stream
+open while discarding every batch costs the server 4,000 samples a second for
+nothing.
 
 ## Layout
 
 ```
 proto/telemetry/v1/   the API, and the single source of truth
-server/               Go service (Connect handlers, simulator)
+server/               Go service
+  internal/sim/       simulator: test sequence, noise, injected faults
+  internal/stream/    Connect handlers and the fan-out broadcaster
   gen/                generated Go — committed, do not edit
 web/                  Vite + React + TypeScript client
+  src/worker/         ring buffers, LTTB view building, anomaly rules
+  src/render/         the three ChartRenderer implementations
+  src/components/     presentational UI
+  src/store/          Redux slices — UI state only, never samples
+  src/bench/          the measurement harness behind NOTES.md
   src/gen/            generated TypeScript — committed, do not edit
 ```
 

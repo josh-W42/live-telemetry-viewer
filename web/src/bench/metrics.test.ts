@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   BenchRun,
   defaultStopConfig,
+  FrameMeter,
   evaluateStop,
   fpsFromFrameTimes,
   readHeapMB,
@@ -14,7 +15,7 @@ const noCounters = {
   pointsHeld: () => 0,
   pointsRendered: () => 0,
   batches: () => 0,
-  gaps: () => 0,
+  droppedBatches: () => 0,
   takePushStats: () => ({ totalMs: 0, maxMs: 0 }),
 };
 
@@ -29,7 +30,7 @@ function sampleAt(t: number, over: Partial<Sample> = {}): Sample {
     pointsHeld: 0,
     pointsRendered: 0,
     batches: 0,
-    gaps: 0,
+    droppedBatches: 0,
     visible: true,
     frames: 60,
     pushMsTotal: 0,
@@ -263,5 +264,53 @@ describe("BenchRun.invalidate", () => {
     run.invalidate("second");
 
     expect(run.reason).toBe("first");
+  });
+});
+
+/*
+The status bar needs a frame rate whether or not a benchmark is running, and
+BenchRun only measures one while a run is in progress. This is what fills the
+rest of the time.
+
+Frames are fed in directly rather than waited for: a test that depends on the
+host actually painting would be slow and would fail on a machine with no
+compositor at all.
+*/
+describe("FrameMeter", () => {
+  it("reads zero before two frames have landed", () => {
+    const meter = new FrameMeter();
+    expect(meter.fps()).toBe(0);
+
+    meter.record(0);
+    expect(meter.fps()).toBe(0);
+  });
+
+  it("reports the rate across the frames it holds", () => {
+    const meter = new FrameMeter();
+    // 61 frames at 16.67ms is one second of 60fps.
+    for (let i = 0; i <= 60; i++) meter.record((i * 1000) / 60);
+
+    expect(meter.fps()).toBeCloseTo(60, 5);
+  });
+
+  // Without this the reported figure would be a lifetime average, so a page
+  // that stuttered once would read slow for as long as it stayed open.
+  it("forgets frames older than its window", () => {
+    const meter = new FrameMeter(1000);
+
+    // A slow second, then a fast one.
+    for (let i = 0; i < 10; i++) meter.record(i * 100);
+    for (let i = 0; i <= 60; i++) meter.record(1000 + (i * 1000) / 60);
+
+    expect(meter.fps()).toBeCloseTo(60, 0);
+  });
+
+  it("reports zero again once stopped", () => {
+    const meter = new FrameMeter();
+    for (let i = 0; i <= 60; i++) meter.record((i * 1000) / 60);
+
+    meter.stop();
+
+    expect(meter.fps()).toBe(0);
   });
 });
