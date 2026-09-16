@@ -309,12 +309,31 @@ export class BenchRun {
     this.onUpdate?.(this);
   }
 
+  /**
+   * End the run as `invalid` — it measured nothing usable.
+   *
+   * Exists because the per-sample checks cannot be relied on to notice in time.
+   * The sampler is a main-thread `setInterval`, which browsers throttle to once
+   * a minute in a background tab and may freeze entirely, so a run that becomes
+   * unmeasurable needs to be told rather than left to find out.
+   */
+  invalidate(reason: string): void {
+    if (this.status !== "running") return;
+
+    this.status = "invalid";
+    this.reason = reason;
+    this.stop();
+    this.onUpdate?.(this);
+  }
+
   stop(): void {
     if (this.timer !== null) {
       clearInterval(this.timer);
       this.timer = null;
     }
-    cancelAnimationFrame(this.rafHandle);
+    // Guarded because a run can be stopped or invalidated before it ever
+    // started — including outside a browser, which is how this is unit tested.
+    if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(this.rafHandle);
     this.observer?.disconnect();
     this.observer = null;
 

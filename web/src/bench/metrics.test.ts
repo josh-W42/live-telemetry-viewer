@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  BenchRun,
   defaultStopConfig,
   evaluateStop,
   fpsFromFrameTimes,
@@ -8,6 +9,14 @@ import {
   type Sample,
   type StopConfig,
 } from "./metrics";
+
+const noCounters = {
+  pointsHeld: () => 0,
+  pointsRendered: () => 0,
+  batches: () => 0,
+  gaps: () => 0,
+  takePushStats: () => ({ totalMs: 0, maxMs: 0 }),
+};
 
 // A sample with sensible defaults, so each test states only what it cares about.
 function sampleAt(t: number, over: Partial<Sample> = {}): Sample {
@@ -213,5 +222,46 @@ describe("evaluateStop", () => {
       const samples = [sampleAt(1000), sampleAt(2000, occluded), sampleAt(3000)];
       expect(evaluateStop(samples, cfg)).toMatchObject({ stop: false, status: "running" });
     });
+  });
+});
+
+describe("BenchRun.invalidate", () => {
+  it("marks the run invalid and records the reason", () => {
+    const run = new BenchRun("worker", noCounters);
+
+    run.invalidate("tab was switched away");
+
+    expect(run.status).toBe("invalid");
+    expect(run.reason).toBe("tab was switched away");
+  });
+
+  it("notifies the listener so the app can close its streams", () => {
+    let notified: BenchRun | null = null;
+    const run = new BenchRun("worker", noCounters, defaultStopConfig, (r) => {
+      notified = r;
+    });
+
+    run.invalidate("hidden");
+
+    expect(notified).toBe(run);
+  });
+
+  it("does not overwrite a run that already finished", () => {
+    const run = new BenchRun("naive", noCounters);
+    run.stop(); // ends as "completed"
+
+    run.invalidate("too late");
+
+    expect(run.status).toBe("completed");
+    expect(run.reason).toBeNull();
+  });
+
+  it("is safe to call twice", () => {
+    const run = new BenchRun("naive", noCounters);
+
+    run.invalidate("first");
+    run.invalidate("second");
+
+    expect(run.reason).toBe("first");
   });
 });

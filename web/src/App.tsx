@@ -70,9 +70,37 @@ export function App() {
   const feeding = useRef(false);
   const [preview, setPreview] = useState(false);
 
+  // Switching away from the tab must tear the stream down immediately.
+  //
+  // Waiting for the per-sample visibility check does not work: the sampler is a
+  // main-thread setInterval, which browsers throttle to roughly once a minute in
+  // a background tab and may freeze outright. A worker is throttled even less,
+  // so in mode C the ring buffers would keep filling at the full 4,000 samples a
+  // second while nobody is watching. Reacting to the event closes that window.
+  const [pageVisible, setPageVisible] = useState(
+    typeof document === "undefined" || !document.hidden,
+  );
+
+  useEffect(() => {
+    const onVisibility = () => {
+      const visible = !document.hidden;
+      setPageVisible(visible);
+
+      // A run that spans a tab switch has not measured a slow renderer, it has
+      // measured a tab nobody was looking at.
+      if (!visible && run.current?.status === "running") {
+        run.current.invalidate("the tab was switched away during the run");
+      }
+    };
+
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
+
   // Nothing streams unless something is consuming: a benchmark run, or an
-  // explicitly enabled live preview.
-  const active = running || preview;
+  // explicitly enabled live preview — and in either case, only while the tab is
+  // actually on screen.
+  const active = (running || preview) && pageVisible;
 
   // --- channel metadata ---------------------------------------------------
   // Cheap unary call, needed by every mode to lay out the chart.
