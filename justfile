@@ -51,3 +51,12 @@ fmt:
 gen-check: gen
     @git diff --exit-code -- server/gen web/src/gen \
       || (echo "generated code is stale — commit the result of 'just gen'" && exit 1)
+
+# Run Go tests with coverage and print the total.
+cover:
+    cd server && go test ./... -coverprofile=coverage.out -covermode=atomic
+    cd server && go tool cover -func=coverage.out | tail -1
+
+# Open the Go coverage report in a browser.
+cover-html: cover
+    cd server && go tool cover -html=coverage.out

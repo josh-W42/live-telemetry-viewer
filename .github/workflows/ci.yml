@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUF_VERSION: v1.73.0
+  JUST_VERSION: 1.58.0
+  # Checksum for just-${JUST_VERSION}-x86_64-unknown-linux-musl.tar.gz.
+  # Kept in step with .devcontainer/Dockerfile — bump both together.
+  JUST_SHA256: 4a5cc2f53e6f0f8c59092a6cc38291eb729d46a7dd95d3ae582008881b84931d
+
+jobs:
+  # Main gate: runs the same `just` recipes used locally, so CI and a developer
+  # machine cannot drift apart.
+  check:
+    name: lint, test, codegen
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # Installed by pinned version rather than through a third-party action, so
+      # the toolchain is auditable from this file alone.
+      - name: Install buf
+        run: go install github.com/bufbuild/buf/cmd/buf@${BUF_VERSION}
+
+      - name: Install just
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSLO "https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          echo "${JUST_SHA256}  just-${JUST_VERSION}-x86_64-unknown-linux-musl.tar.gz" | sha256sum -c -
+          tar -xzf "just-${JUST_VERSION}-x86_64-unknown-linux-musl.tar.gz" -C "$RUNNER_TEMP/bin" just
+          rm "just-${JUST_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Install web dependencies
+        run: just install
+
+      - name: Lint (buf, go vet, tsc)
+        run: just lint
+
+      - name: Test
+        run: just test
+
+      - name: Coverage
+        run: just cover
+
+      # Fails if the committed generated code does not match the protos.
+      - name: Generated code is up to date
+        run: just gen-check
+
+  # The codegen path is the most platform-sensitive part of this repo: the TS
+  # plugin is invoked through a shell shim that differs on Windows, and line
+  # endings can make generated output drift. This job builds on Windows to catch
+  # that, without duplicating the full recipe set.
+  windows:
+    name: windows build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # `shell: bash` throughout: PowerShell is the Windows default and only
+      # checks the exit code of the last command in a multi-line run, so a
+      # failing `go build` followed by a passing `go vet` would go unnoticed.
+      - name: Install buf
+        shell: bash
+        run: go install github.com/bufbuild/buf/cmd/buf@${BUF_VERSION}
+
+      - name: Install web dependencies
+        shell: bash
+        working-directory: web
+        run: npm ci --ignore-scripts
+
+      - name: Generate
+        shell: bash
+        run: buf generate
+
+      - name: Generated output matches the committed code
+        shell: bash
+        run: git diff --exit-code -- server/gen web/src/gen
+
+      - name: Build and vet
+        shell: bash
+        working-directory: server
+        run: |
+          set -euo pipefail
+          go build ./...
+          go vet ./...
+
+      - name: Typecheck
+        shell: bash
+        working-directory: web
+        run: npx tsc --noEmit

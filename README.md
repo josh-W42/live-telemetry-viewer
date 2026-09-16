@@ -1,5 +1,7 @@
 # Live Telemetry Viewer
 
+[![CI](https://github.com/josh-W42/live-telemetry-viewer/actions/workflows/ci.yml/badge.svg)](https://github.com/josh-W42/live-telemetry-viewer/actions/workflows/ci.yml)
+
 A Go service that streams simulated rocket-engine test-stand telemetry over
 Connect/gRPC, and a React + TypeScript app that plots it live while staying
 smooth at millions of points.
@@ -39,7 +41,9 @@ just gen        # regenerate Go + TypeScript from proto/
 just server     # Go API on :8080
 just web        # Vite dev server on :5173
 just test       # Go + web tests
+just cover      # Go tests with a coverage total
 just lint       # buf lint, go vet, tsc
+just gen-check  # fail if committed codegen is stale
 ```
 
 Run `just server` and `just web` in two shells, then open
@@ -61,3 +65,25 @@ generated code has drifted from the protos.
 
 **Supply chain.** `just install` runs `npm ci --ignore-scripts`, which installs
 exactly what the lockfile pins and does not execute package lifecycle hooks.
+
+## CI
+
+`.github/workflows/ci.yml` runs on every push to `main` and every pull request.
+
+- **`check` (ubuntu)** runs the same `just` recipes you run locally — install,
+  lint, test, cover, gen-check — so CI and a developer machine cannot drift.
+- **`windows` job** builds and generates on Windows. Codegen is the most
+  platform-sensitive part of this repo: the TypeScript plugin is invoked through
+  a shim that differs by platform, and line endings can make generated output
+  drift. This job catches both.
+
+`buf` and `just` are installed by pinned version (`just` against a recorded
+SHA-256) rather than through third-party actions, so the CI toolchain is
+auditable from the workflow file alone.
+
+## Go toolchain note
+
+`server/go.mod` requires Go 1.26+, because `connect-go` 1.21 does. If your local
+Go is older, `GOTOOLCHAIN=auto` will download a newer one automatically — but
+those downloaded toolchains omit some prebuilt tools, and `go test -cover` fails
+with `no such tool "covdata"`. Install Go 1.26 or newer natively to avoid it.

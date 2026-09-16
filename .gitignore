@@ -17,3 +17,6 @@ server/server.exe
 # Local env overrides
 .env
 .env.local
+
+# Coverage output
+server/coverage.out
