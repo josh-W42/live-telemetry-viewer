@@ -1,0 +1,26 @@
+# Render Blueprint.
+#
+# Kept in the repo so the deployment is reviewable and reproducible rather than
+# clicked into a dashboard, and so the container stays portable - the same
+# image runs on Fly or anywhere else if this platform does not work out.
+services:
+  - type: web
+    name: telemetry
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    region: oregon
+    # Free while the streaming behaviour is being verified. The link is meant
+    # for cold, unannounced clicks, and a free instance sleeps after idling -
+    # a 50-second wake reads as a broken site, not as a free tier. Raise to
+    # starter once the chart is confirmed to scroll rather than lurch.
+    plan: free
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      # Single origin: the browser never preflights, so CORS is switched off
+      # rather than set to a permissive wildcard.
+      - key: ALLOWED_ORIGIN
+        value: ""
+      # The endpoint is unauthenticated and streams ~68 KiB/s per subscriber.
+      - key: MAX_SUBSCRIBERS
+        value: "25"

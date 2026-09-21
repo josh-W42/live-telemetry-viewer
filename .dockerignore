@@ -1,0 +1,15 @@
+# Keep the build context small and the layer cache honest. Anything the build
+# needs is copied explicitly in the Dockerfile.
+.git
+.github
+.devcontainer
+node_modules
+web/node_modules
+web/dist
+server/server
+server/server.exe
+server/coverage.out
+server/internal/web/assets
+bench-results
+docs
+*.md
