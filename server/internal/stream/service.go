@@ -43,6 +43,8 @@ func (s *Service) ListChannels(
 			Name:         c.Name,
 			Unit:         c.Unit,
 			SampleRateHz: c.SampleRateHz,
+			DisplayMin:   c.DisplayMin,
+			DisplayMax:   c.DisplayMax,
 		}
 	}
 

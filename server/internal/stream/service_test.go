@@ -61,6 +61,12 @@ func TestListChannelsReturnsTheSimulatorChannels(t *testing.T) {
 		if ch.Id == "" || ch.Name == "" || ch.Unit == "" {
 			t.Errorf("incomplete channel metadata: %+v", ch)
 		}
+		// The viewer draws a fixed axis from these, so an unset range would
+		// collapse the chart to a line at zero rather than fail loudly.
+		if ch.DisplayMax <= ch.DisplayMin {
+			t.Errorf("%s: display range [%v, %v] is empty or inverted",
+				ch.Id, ch.DisplayMin, ch.DisplayMax)
+		}
 		if ch.SampleRateHz != 1000 {
 			t.Errorf("%s: rate %v, want 1000", ch.Id, ch.SampleRateHz)
 		}
