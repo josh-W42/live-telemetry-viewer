@@ -244,6 +244,48 @@ still showed a healthy dot. The worker already posted `ready` and `error`; the r
 discarding both. It now forwards them, and stopping the server turns the indicator red with
 the transport's own message.
 
+### Per-channel axes, and what they cost
+
+Unticking fuel flow changed the numbers on vibration's axis and tripled its apparent height,
+because both sat on one `scale: true` axis that ECharts fits to whatever data is on it.
+Visibility was an input to another channel's scale — a trace changing amplitude without its
+data changing, which in a telemetry viewer is a correctness problem rather than a cosmetic
+one. The same root cause produced the `g / kg·s⁻¹` label, where a tick reading 12 meant 12 of
+something unstated.
+
+Each channel now has its own axis at a fixed range the **server** declares, derived in `sim`
+from the phase table and the fault amplitudes. Hardcoding four ranges in the client would
+have been a fourth copy of simulator knowledge, after the thresholds in `rules.ts` and
+`faults_test.go`, and the only one with nothing to fail when it drifted. A hidden channel's
+axis is dimmed rather than removed, because an axis that collapsed would let the others slide
+over, narrow the insets and change every trace's apparent width — horizontal instability in
+place of vertical.
+
+**Points rendered fell from 12,888 to roughly 11,100, for two reasons, and only one of them
+is the axes.**
+
+Four axes take about 224px of a ~1,600px chart. But the budget was also being computed from
+the *element* width rather than the plot width, so it had always been asking for slightly
+more points than the plot could show — about 2.5 per pixel instead of 2. With four axes that
+would have become 3 per pixel, which is what made it visible. Both are now fixed: the budget
+is `2 × plotWidth × visible channels`.
+
+Neither is a regression. The first is the display getting narrower and the metric tracking
+it, which is the property the figure exists to demonstrate. The second was drawing points
+nobody could see.
+
+**The trade the fixed axes make, stated plainly.** A fixed axis cannot zoom in on a small
+excursion. Chamber temperature spans 0–4,000 K, so the thermocouple dropout — a fall to about
+41 K — is a movement of 1% of the axis height. You can see *when* it happened and the sidebar
+gives its depth to a decimal place, but clicking through to it shows a flat line near the
+bottom rather than the shape of the dip. The old auto-scaling axis would have shown that
+shape, at the cost of the instability above.
+
+That is the deliberate trade and not a defect, but it is the thing to fix next if this were
+going further: an opt-in "fit to window" toggle would restore per-channel autoscaling as
+something the user asks for, rather than something that happens to them when they untick an
+unrelated channel.
+
 ### A change that was reverted
 
 While checking teardown, the server appeared to hold subscribers after pages went away, and

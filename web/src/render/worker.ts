@@ -345,7 +345,14 @@ export class WorkerRenderer implements ChartRenderer {
   }
 
   private requestView(): void {
-    const width = this.chart?.getWidth() ?? 1200;
+    // The *plot* width, not the element's. The axes take their share of the
+    // element, and asking for two points per element pixel would draw three
+    // per plot pixel now that there are four axes rather than two — points
+    // nobody can see, costing main-thread time to draw. This was already
+    // slightly over before the axes grew; it is simply visible now.
+    const element = this.chart?.getWidth() ?? 1200;
+    const width = Math.max(1, element - this.insets.left - this.insets.right);
+
     const { startNs, endNs } = this.bounds();
 
     this.inFlight = this.nextRequestId++;
