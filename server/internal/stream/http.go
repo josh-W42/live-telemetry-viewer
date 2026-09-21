@@ -38,7 +38,10 @@ func NewHTTPHandler(svc *Service, allowedOrigin string, static http.Handler) htt
 	})
 
 	if static != nil {
-		mux.Handle("/", static)
+		// Gzip wraps only the static handler. Connect negotiates its own
+		// compression per the protocol, and wrapping it would compress an
+		// already-compressed stream and risk interfering with its framing.
+		mux.Handle("/", WithGzip(static))
 	}
 
 	// h2c serves HTTP/2 over cleartext, so grpcurl and native gRPC clients can

@@ -20,3 +20,9 @@ server/server.exe
 
 # Coverage output
 server/coverage.out
+
+# The Docker build copies web/dist here to be embedded in the binary. Only
+# the dev placeholder is tracked. Note this directory is NOT called `dist`:
+# the bare `dist/` rule above matches at any depth and would swallow it.
+server/internal/web/assets/*
+!server/internal/web/assets/index.html
