@@ -16,7 +16,7 @@ func newHandler(t *testing.T, allowedOrigin string, static http.Handler) http.Ha
 
 	s := sim.New(sim.Config{Seed: 1, RateHz: 1000, EpochNs: time.Now().UnixNano()})
 	bus := stream.NewBroadcaster(stream.DefaultBufferDepth)
-	return stream.NewHTTPHandler(stream.New(s, bus), allowedOrigin, static)
+	return stream.NewHTTPHandler(stream.New(s, bus, nil), allowedOrigin, static)
 }
 
 func do(t *testing.T, h http.Handler, method, path string) *httptest.ResponseRecorder {

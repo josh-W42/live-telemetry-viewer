@@ -10,7 +10,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file telemetry/v1/telemetry.proto.
  */
 export const file_telemetry_v1_telemetry: GenFile = /*@__PURE__*/
-  fileDesc("Chx0ZWxlbWV0cnkvdjEvdGVsZW1ldHJ5LnByb3RvEgx0ZWxlbWV0cnkudjEicwoHQ2hhbm5lbBIKCgJpZBgBIAEoCRIMCgRuYW1lGAIgASgJEgwKBHVuaXQYAyABKAkSFgoOc2FtcGxlX3JhdGVfaHoYBCABKAESEwoLZGlzcGxheV9taW4YBSABKAESEwoLZGlzcGxheV9tYXgYBiABKAEiFQoTTGlzdENoYW5uZWxzUmVxdWVzdCI/ChRMaXN0Q2hhbm5lbHNSZXNwb25zZRInCghjaGFubmVscxgBIAMoCzIVLnRlbGVtZXRyeS52MS5DaGFubmVsIi0KFlN0cmVhbVRlbGVtZXRyeVJlcXVlc3QSEwoLY2hhbm5lbF9pZHMYASADKAkiSwoOQ2hhbm5lbFNhbXBsZXMSEgoKY2hhbm5lbF9pZBgBIAEoCRIVCg10aW1lc3RhbXBzX25zGAIgAygDEg4KBnZhbHVlcxgDIAMoASJSCg5UZWxlbWV0cnlCYXRjaBIuCghjaGFubmVscxgBIAMoCzIcLnRlbGVtZXRyeS52MS5DaGFubmVsU2FtcGxlcxIQCghzZXF1ZW5jZRgCIAEoBDLGAQoQVGVsZW1ldHJ5U2VydmljZRJXCgxMaXN0Q2hhbm5lbHMSIS50ZWxlbWV0cnkudjEuTGlzdENoYW5uZWxzUmVxdWVzdBoiLnRlbGVtZXRyeS52MS5MaXN0Q2hhbm5lbHNSZXNwb25zZSIAElkKD1N0cmVhbVRlbGVtZXRyeRIkLnRlbGVtZXRyeS52MS5TdHJlYW1UZWxlbWV0cnlSZXF1ZXN0GhwudGVsZW1ldHJ5LnYxLlRlbGVtZXRyeUJhdGNoIgAwAULCAQoQY29tLnRlbGVtZXRyeS52MUIOVGVsZW1ldHJ5UHJvdG9QAVpNZ2l0aHViLmNvbS9qb3NoLVc0Mi9saXZlLXRlbGVtZXRyeS12aWV3ZXIvc2VydmVyL2dlbi90ZWxlbWV0cnkvdjE7dGVsZW1ldHJ5djGiAgNUWFiqAgxUZWxlbWV0cnkuVjHKAgxUZWxlbWV0cnlcVjHiAhhUZWxlbWV0cnlcVjFcR1BCTWV0YWRhdGHqAg1UZWxlbWV0cnk6OlYxYgZwcm90bzM");
+  fileDesc("Chx0ZWxlbWV0cnkvdjEvdGVsZW1ldHJ5LnByb3RvEgx0ZWxlbWV0cnkudjEicwoHQ2hhbm5lbBIKCgJpZBgBIAEoCRIMCgRuYW1lGAIgASgJEgwKBHVuaXQYAyABKAkSFgoOc2FtcGxlX3JhdGVfaHoYBCABKAESEwoLZGlzcGxheV9taW4YBSABKAESEwoLZGlzcGxheV9tYXgYBiABKAEiFQoTTGlzdENoYW5uZWxzUmVxdWVzdCI/ChRMaXN0Q2hhbm5lbHNSZXNwb25zZRInCghjaGFubmVscxgBIAMoCzIVLnRlbGVtZXRyeS52MS5DaGFubmVsIkIKFlN0cmVhbVRlbGVtZXRyeVJlcXVlc3QSEwoLY2hhbm5lbF9pZHMYASADKAkSEwoLbmV3X3Nlc3Npb24YAiABKAgiSwoOQ2hhbm5lbFNhbXBsZXMSEgoKY2hhbm5lbF9pZBgBIAEoCRIVCg10aW1lc3RhbXBzX25zGAIgAygDEg4KBnZhbHVlcxgDIAMoASJSCg5UZWxlbWV0cnlCYXRjaBIuCghjaGFubmVscxgBIAMoCzIcLnRlbGVtZXRyeS52MS5DaGFubmVsU2FtcGxlcxIQCghzZXF1ZW5jZRgCIAEoBDLGAQoQVGVsZW1ldHJ5U2VydmljZRJXCgxMaXN0Q2hhbm5lbHMSIS50ZWxlbWV0cnkudjEuTGlzdENoYW5uZWxzUmVxdWVzdBoiLnRlbGVtZXRyeS52MS5MaXN0Q2hhbm5lbHNSZXNwb25zZSIAElkKD1N0cmVhbVRlbGVtZXRyeRIkLnRlbGVtZXRyeS52MS5TdHJlYW1UZWxlbWV0cnlSZXF1ZXN0GhwudGVsZW1ldHJ5LnYxLlRlbGVtZXRyeUJhdGNoIgAwAULCAQoQY29tLnRlbGVtZXRyeS52MUIOVGVsZW1ldHJ5UHJvdG9QAVpNZ2l0aHViLmNvbS9qb3NoLVc0Mi9saXZlLXRlbGVtZXRyeS12aWV3ZXIvc2VydmVyL2dlbi90ZWxlbWV0cnkvdjE7dGVsZW1ldHJ5djGiAgNUWFiqAgxUZWxlbWV0cnkuVjHKAgxUZWxlbWV0cnlcVjHiAhhUZWxlbWV0cnlcVjFcR1BCTWV0YWRhdGHqAg1UZWxlbWV0cnk6OlYxYgZwcm90bzM");
 
 /**
  * Channel describes one sensor on the test stand.
@@ -109,6 +109,20 @@ export type StreamTelemetryRequest = Message<"telemetry.v1.StreamTelemetryReques
    * @generated from field: repeated string channel_ids = 1;
    */
   channelIds: string[];
+
+  /**
+   * True on a page's first connection, false when reconnecting after a tab
+   * switch or a dropped stream.
+   *
+   * Tabbing away tears the stream down, so a returning viewer and a brand-new
+   * visitor produce an identical 0-to-1 subscriber transition and the server
+   * cannot tell them apart. The client is the only party that knows, so it
+   * says. The server starts a fresh test sequence only for a genuine new
+   * arrival, which is why tabbing away and back resumes the run in progress.
+   *
+   * @generated from field: bool new_session = 2;
+   */
+  newSession: boolean;
 };
 
 /**

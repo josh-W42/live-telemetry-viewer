@@ -28,25 +28,26 @@ func main() {
 
 	// The simulator is pure, so the epoch is fixed once here. Everything
 	// downstream derives timestamps from it.
-	simulator := sim.New(sim.Config{
+	simCfg := sim.Config{
 		Seed:    *seed,
 		RateHz:  *rate,
 		EpochNs: time.Now().UnixNano(),
-	})
+	}
+	simulator := sim.New(simCfg)
 
 	bus := stream.NewBroadcaster(stream.DefaultBufferDepth)
 
 	// One simulator feeds the broadcaster, so every browser tab sees the same
 	// engine run. It starts at boot and keeps running with no subscribers, so
 	// the test sequence stays on the wall clock.
-	pump := stream.NewPump(simulator, bus, *batchInterval)
+	pump := stream.NewPump(simCfg, bus, *batchInterval)
 	go pump.Run(ctx)
 
 	go logStats(ctx, bus)
 
 	srv := &http.Server{
 		Addr:              ":" + *port,
-		Handler:           stream.NewHTTPHandler(stream.New(simulator, bus), *allowedOrigin, nil),
+		Handler:           stream.NewHTTPHandler(stream.New(simulator, bus, pump.Restart), *allowedOrigin, nil),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

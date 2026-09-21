@@ -197,7 +197,16 @@ func (x *ListChannelsResponse) GetChannels() []*Channel {
 type StreamTelemetryRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Channels to subscribe to. Empty means all channels.
-	ChannelIds    []string `protobuf:"bytes,1,rep,name=channel_ids,json=channelIds,proto3" json:"channel_ids,omitempty"`
+	ChannelIds []string `protobuf:"bytes,1,rep,name=channel_ids,json=channelIds,proto3" json:"channel_ids,omitempty"`
+	// True on a page's first connection, false when reconnecting after a tab
+	// switch or a dropped stream.
+	//
+	// Tabbing away tears the stream down, so a returning viewer and a brand-new
+	// visitor produce an identical 0-to-1 subscriber transition and the server
+	// cannot tell them apart. The client is the only party that knows, so it
+	// says. The server starts a fresh test sequence only for a genuine new
+	// arrival, which is why tabbing away and back resumes the run in progress.
+	NewSession    bool `protobuf:"varint,2,opt,name=new_session,json=newSession,proto3" json:"new_session,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -237,6 +246,13 @@ func (x *StreamTelemetryRequest) GetChannelIds() []string {
 		return x.ChannelIds
 	}
 	return nil
+}
+
+func (x *StreamTelemetryRequest) GetNewSession() bool {
+	if x != nil {
+		return x.NewSession
+	}
+	return false
 }
 
 // ChannelSamples carries one channel's samples as parallel arrays rather than
@@ -374,10 +390,12 @@ const file_telemetry_v1_telemetry_proto_rawDesc = "" +
 	"displayMax\"\x15\n" +
 	"\x13ListChannelsRequest\"I\n" +
 	"\x14ListChannelsResponse\x121\n" +
-	"\bchannels\x18\x01 \x03(\v2\x15.telemetry.v1.ChannelR\bchannels\"9\n" +
+	"\bchannels\x18\x01 \x03(\v2\x15.telemetry.v1.ChannelR\bchannels\"Z\n" +
 	"\x16StreamTelemetryRequest\x12\x1f\n" +
 	"\vchannel_ids\x18\x01 \x03(\tR\n" +
-	"channelIds\"l\n" +
+	"channelIds\x12\x1f\n" +
+	"\vnew_session\x18\x02 \x01(\bR\n" +
+	"newSession\"l\n" +
 	"\x0eChannelSamples\x12\x1d\n" +
 	"\n" +
 	"channel_id\x18\x01 \x01(\tR\tchannelId\x12#\n" +

@@ -17,6 +17,10 @@ import (
 type Service struct {
 	sim *sim.Simulator
 	bus *Broadcaster
+
+	// onNewSession restarts the test sequence. Nil disables the behaviour,
+	// which is what most tests want.
+	onNewSession func()
 }
 
 // Compile-time proof that Service satisfies the generated interface. If a
@@ -25,8 +29,8 @@ type Service struct {
 var _ telemetryv1connect.TelemetryServiceHandler = (*Service)(nil)
 
 // New returns a Service reading channel metadata from s and batches from bus.
-func New(s *sim.Simulator, bus *Broadcaster) *Service {
-	return &Service{sim: s, bus: bus}
+func New(s *sim.Simulator, bus *Broadcaster, onNewSession func()) *Service {
+	return &Service{sim: s, bus: bus, onNewSession: onNewSession}
 }
 
 // ListChannels returns the channels the simulator produces.
@@ -57,6 +61,15 @@ func (s *Service) StreamTelemetry(
 	req *connect.Request[telemetryv1.StreamTelemetryRequest],
 	out *connect.ServerStream[telemetryv1.TelemetryBatch],
 ) error {
+	// Checked here rather than in the pump so that "a join mid-run is not a
+	// restart" holds by construction: the count can only be zero when nobody
+	// else is watching. The check-then-subscribe race is real and benign - two
+	// simultaneous cold arrivals both see zero, both ask, and the pump
+	// restarts once.
+	if req.Msg.NewSession && s.onNewSession != nil && s.bus.SubscriberCount() == 0 {
+		s.onNewSession()
+	}
+
 	sub, err := s.bus.Subscribe(req.Msg.ChannelIds)
 	if err != nil {
 		// ResourceExhausted rather than Unavailable: the server is healthy,

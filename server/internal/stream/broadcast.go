@@ -136,6 +136,14 @@ func (b *Broadcaster) SubscriberCount() int {
 }
 
 // Dropped returns the total batches dropped across all live subscribers.
+// Published reports how many batches have been broadcast. Sequence numbers
+// are assigned one per publish, so this is that counter.
+func (b *Broadcaster) Published() uint64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.seq
+}
+
 func (b *Broadcaster) Dropped() uint64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()

@@ -30,13 +30,14 @@ const viteOrigin = "http://localhost:5173"
 func newTestServer(t *testing.T) (telemetryv1connect.TelemetryServiceClient, *stream.Broadcaster, *httptest.Server) {
 	t.Helper()
 
-	s := sim.New(sim.Config{Seed: 1, RateHz: 1000, EpochNs: time.Now().UnixNano()})
+	cfg := sim.Config{Seed: 1, RateHz: 1000, EpochNs: time.Now().UnixNano()}
+	s := sim.New(cfg)
 	bus := stream.NewBroadcaster(stream.DefaultBufferDepth)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go stream.NewPump(s, bus, 10*time.Millisecond).Run(ctx)
+	go stream.NewPump(cfg, bus, 10*time.Millisecond).Run(ctx)
 
-	srv := httptest.NewServer(stream.NewHTTPHandler(stream.New(s, bus), viteOrigin, nil))
+	srv := httptest.NewServer(stream.NewHTTPHandler(stream.New(s, bus, nil), viteOrigin, nil))
 	t.Cleanup(func() {
 		cancel()
 		srv.Close()
@@ -220,5 +221,69 @@ func TestCORSRejectsAnUnknownOrigin(t *testing.T) {
 
 	if got := res.Header.Get("Access-Control-Allow-Origin"); got != "" {
 		t.Errorf("unknown origin was allowed: Access-Control-Allow-Origin is %q", got)
+	}
+}
+
+/*
+The rule the new_session flag exists to express.
+
+Tabbing away tears the stream down, so a returning viewer and a brand-new
+visitor produce an identical 0-to-1 subscriber transition. Only the client
+knows which it is, so only a request that says new_session restarts the rig -
+and only when nobody else is already watching, or a stranger opening the page
+would snap an existing viewer from steady state back to idle.
+*/
+func TestNewSessionRestartsOnlyForAColdArrival(t *testing.T) {
+	cases := []struct {
+		name       string
+		newSession bool
+		existing   int
+		want       int
+	}{
+		{"cold arrival restarts", true, 0, 1},
+		{"joining an existing viewer does not", true, 1, 0},
+		{"a reconnect never does", false, 0, 0},
+		{"a reconnect alongside others never does", false, 1, 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := sim.Config{Seed: 1, RateHz: 1000, EpochNs: time.Now().UnixNano()}
+			bus := stream.NewBroadcaster(stream.DefaultBufferDepth)
+
+			restarts := 0
+			svc := stream.New(sim.New(cfg), bus, func() { restarts++ })
+
+			for i := 0; i < tc.existing; i++ {
+				sub := mustSubscribe(t, bus, nil)
+				defer sub.Close()
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			go stream.NewPump(cfg, bus, 10*time.Millisecond).Run(ctx)
+
+			srv := httptest.NewServer(stream.NewHTTPHandler(svc, "", nil))
+			defer func() {
+				cancel()
+				srv.Close()
+			}()
+
+			client := telemetryv1connect.NewTelemetryServiceClient(srv.Client(), srv.URL)
+			streamCtx, stop := context.WithTimeout(context.Background(), 2*time.Second)
+			defer stop()
+
+			st, err := client.StreamTelemetry(streamCtx, connect.NewRequest(&telemetryv1.StreamTelemetryRequest{
+				NewSession: tc.newSession,
+			}))
+			if err != nil {
+				t.Fatalf("StreamTelemetry: %v", err)
+			}
+			st.Receive()
+			_ = st.Close()
+
+			if restarts != tc.want {
+				t.Errorf("got %d restarts, want %d", restarts, tc.want)
+			}
+		})
 	}
 }

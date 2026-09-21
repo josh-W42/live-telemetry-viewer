@@ -38,6 +38,15 @@ message ListChannelsResponse {
 message StreamTelemetryRequest {
   // Channels to subscribe to. Empty means all channels.
   repeated string channel_ids = 1;
+  // True on a page's first connection, false when reconnecting after a tab
+  // switch or a dropped stream.
+  //
+  // Tabbing away tears the stream down, so a returning viewer and a brand-new
+  // visitor produce an identical 0-to-1 subscriber transition and the server
+  // cannot tell them apart. The client is the only party that knows, so it
+  // says. The server starts a fresh test sequence only for a genuine new
+  // arrival, which is why tabbing away and back resumes the run in progress.
+  bool new_session = 2;
 }
 
 // ChannelSamples carries one channel's samples as parallel arrays rather than
