@@ -10,10 +10,10 @@ import (
 
 	"connectrpc.com/connect"
 
-	telemetryv1 "github.com/josh-W42/sift/server/gen/telemetry/v1"
-	"github.com/josh-W42/sift/server/gen/telemetry/v1/telemetryv1connect"
-	"github.com/josh-W42/sift/server/internal/sim"
-	"github.com/josh-W42/sift/server/internal/stream"
+	telemetryv1 "github.com/josh-W42/live-telemetry-viewer/server/gen/telemetry/v1"
+	"github.com/josh-W42/live-telemetry-viewer/server/gen/telemetry/v1/telemetryv1connect"
+	"github.com/josh-W42/live-telemetry-viewer/server/internal/sim"
+	"github.com/josh-W42/live-telemetry-viewer/server/internal/stream"
 )
 
 const viteOrigin = "http://localhost:5173"

@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	telemetryv1 "github.com/josh-W42/sift/server/gen/telemetry/v1"
-	"github.com/josh-W42/sift/server/internal/sim"
+	telemetryv1 "github.com/josh-W42/live-telemetry-viewer/server/gen/telemetry/v1"
+	"github.com/josh-W42/live-telemetry-viewer/server/internal/sim"
 )
 
 // Pump drives the simulator on a wall clock and publishes batches.

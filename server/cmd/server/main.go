@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/josh-W42/sift/server/internal/sim"
-	"github.com/josh-W42/sift/server/internal/stream"
+	"github.com/josh-W42/live-telemetry-viewer/server/internal/sim"
+	"github.com/josh-W42/live-telemetry-viewer/server/internal/stream"
 )
 
 func main() {

@@ -1,4 +1,4 @@
-module github.com/josh-W42/sift/server
+module github.com/josh-W42/live-telemetry-viewer/server
 
 go 1.26.0
 

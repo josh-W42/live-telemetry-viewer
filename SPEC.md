@@ -24,9 +24,9 @@ A learning project that mirrors the core of a production telemetry platform: a G
 | Codegen | `buf` | Standard tooling for proto lint and generation |
 | Frontend | Vite + React + TypeScript | Fast dev loop (Next.js isn't needed here) |
 | Client RPC | `@connectrpc/connect` + `@connectrpc/connect-web` | Typed client generated from the same proto |
-| Charts | Apache ECharts (canvas renderer) | On the stack being mirrored |
+| Charts | Apache ECharts (canvas renderer) | Canvas handles large series; on the stack being mirrored |
 | UI state | Redux Toolkit | On the stack being mirrored; holds UI state only, never raw samples |
-| UI primitives | Radix UI | On the stack being mirrored |
+| UI primitives | Radix UI | Accessible unstyled primitives; on the stack being mirrored |
 | Tests | Go `testing`, Vitest | |
 
 ## Repo layout

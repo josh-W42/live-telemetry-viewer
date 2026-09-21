@@ -3,7 +3,7 @@ package sim_test
 import (
 	"testing"
 
-	"github.com/josh-W42/sift/server/internal/sim"
+	"github.com/josh-W42/live-telemetry-viewer/server/internal/sim"
 )
 
 // The thresholds the client's rules use, mirrored here so the simulator can be

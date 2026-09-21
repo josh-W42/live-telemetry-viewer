@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/josh-W42/sift/server/internal/sim"
+	"github.com/josh-W42/live-telemetry-viewer/server/internal/sim"
 )
 
 const (

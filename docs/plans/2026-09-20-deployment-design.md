@@ -252,9 +252,9 @@ Committed as a Blueprint: Docker runtime, `healthCheckPath: /healthz`, `autoDepl
 
 ### 11. Prerequisite: a git remote
 
-Render deploys from GitHub and there is still no remote. Pushing to
-`github.com/josh-W42/live-telemetry-viewer` is step zero — and it makes the CI workflow run for the first time
-and fixes the README badge, which has been 404ing since M0.
+Render deploys from GitHub. The remote exists at `github.com/josh-W42/live-telemetry-viewer`
+and CI passes, but the repo is **private** — fine for Render, useless for a CV link that
+sends someone to a 404, and the badge renders for nobody. Making it public is step zero.
 
 ## Verification, in order
 

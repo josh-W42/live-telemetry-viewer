@@ -33,28 +33,22 @@ for the numbers in `NOTES.md`.
 
 ---
 
-### Task 1: Push to GitHub
+### Task 1: Make the repo public — DONE apart from the last step
 
-Everything else depends on this: Render deploys from a repo, and there is no remote.
+The remote exists (`git@github.com:josh-W42/live-telemetry-viewer.git`) and CI has run and
+passed. What remains is visibility: the repo is private, so Render can deploy from it but an
+interviewer following the link from a CV gets a 404, and the CI badge renders for nobody.
 
-**Step 1: Create the remote and push**
+**Step 1: Flip it public**
 
 ```bash
-gh repo create josh-W42/live-telemetry-viewer --public --source=. --remote=origin --push
+gh repo edit --visibility public --accept-visibility-change-consequences
 ```
 
-**Step 2: Confirm CI runs**
+**Step 2: Confirm**
 
-Run: `gh run list --limit 3`
-Expected: the `CI` workflow appears and passes on both the ubuntu and windows jobs. This is
-its first ever run — if it fails, fix that before going further, because Render will build
-from the same tree.
-
-**Step 3: Check the README badge**
-
-Open the repo page. The CI badge at the top of `README.md` should now render instead of 404ing.
-
-No commit — this task only creates the remote.
+Run: `gh repo view --json visibility` — expect `PUBLIC`.
+Open the repo page signed out, or in a private window, and check the CI badge renders.
 
 ---
 
@@ -74,7 +68,7 @@ package config_test
 import (
 	"testing"
 
-	"github.com/josh-W42/sift/server/internal/config"
+	"github.com/josh-W42/live-telemetry-viewer/server/internal/config"
 )
 
 func TestStringPrefersTheEnvironment(t *testing.T) {
@@ -833,7 +827,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/josh-W42/sift/server/internal/web"
+	"github.com/josh-W42/live-telemetry-viewer/server/internal/web"
 )
 
 func get(t *testing.T, path string) *httptest.ResponseRecorder {

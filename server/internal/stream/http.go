@@ -8,7 +8,7 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
-	"github.com/josh-W42/sift/server/gen/telemetry/v1/telemetryv1connect"
+	"github.com/josh-W42/live-telemetry-viewer/server/gen/telemetry/v1/telemetryv1connect"
 )
 
 // NewHTTPHandler mounts the Connect service and wraps it in CORS and h2c.

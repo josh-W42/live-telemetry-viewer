@@ -9,7 +9,7 @@ managed:
   enabled: true
   override:
     - file_option: go_package_prefix
-      value: github.com/josh-W42/sift/server/gen
+      value: github.com/josh-W42/live-telemetry-viewer/server/gen
 
 plugins:
   # Go messages. Invoked through `go tool` so the version comes from the

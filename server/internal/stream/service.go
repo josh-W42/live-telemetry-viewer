@@ -8,9 +8,9 @@ import (
 
 	"connectrpc.com/connect"
 
-	telemetryv1 "github.com/josh-W42/sift/server/gen/telemetry/v1"
-	"github.com/josh-W42/sift/server/gen/telemetry/v1/telemetryv1connect"
-	"github.com/josh-W42/sift/server/internal/sim"
+	telemetryv1 "github.com/josh-W42/live-telemetry-viewer/server/gen/telemetry/v1"
+	"github.com/josh-W42/live-telemetry-viewer/server/gen/telemetry/v1/telemetryv1connect"
+	"github.com/josh-W42/live-telemetry-viewer/server/internal/sim"
 )
 
 // Service implements telemetryv1connect.TelemetryServiceHandler.

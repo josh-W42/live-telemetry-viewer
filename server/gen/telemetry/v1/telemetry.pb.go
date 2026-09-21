@@ -388,8 +388,8 @@ const file_telemetry_v1_telemetry_proto_rawDesc = "" +
 	"\bsequence\x18\x02 \x01(\x04R\bsequence2\xc6\x01\n" +
 	"\x10TelemetryService\x12W\n" +
 	"\fListChannels\x12!.telemetry.v1.ListChannelsRequest\x1a\".telemetry.v1.ListChannelsResponse\"\x00\x12Y\n" +
-	"\x0fStreamTelemetry\x12$.telemetry.v1.StreamTelemetryRequest\x1a\x1c.telemetry.v1.TelemetryBatch\"\x000\x01B\xb1\x01\n" +
-	"\x10com.telemetry.v1B\x0eTelemetryProtoP\x01Z<github.com/josh-W42/sift/server/gen/telemetry/v1;telemetryv1\xa2\x02\x03TXX\xaa\x02\fTelemetry.V1\xca\x02\fTelemetry\\V1\xe2\x02\x18Telemetry\\V1\\GPBMetadata\xea\x02\rTelemetry::V1b\x06proto3"
+	"\x0fStreamTelemetry\x12$.telemetry.v1.StreamTelemetryRequest\x1a\x1c.telemetry.v1.TelemetryBatch\"\x000\x01B\xc2\x01\n" +
+	"\x10com.telemetry.v1B\x0eTelemetryProtoP\x01ZMgithub.com/josh-W42/live-telemetry-viewer/server/gen/telemetry/v1;telemetryv1\xa2\x02\x03TXX\xaa\x02\fTelemetry.V1\xca\x02\fTelemetry\\V1\xe2\x02\x18Telemetry\\V1\\GPBMetadata\xea\x02\rTelemetry::V1b\x06proto3"
 
 var (
 	file_telemetry_v1_telemetry_proto_rawDescOnce sync.Once

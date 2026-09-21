@@ -1,6 +1,6 @@
 # Live Telemetry Viewer
 
-[![CI](https://github.com/josh-W42/Live-Telemetry-Viewer/actions/workflows/ci.yml/badge.svg)](https://github.com/josh-W42/Live-Telemetry-Viewer/actions/workflows/ci.yml)
+[![CI](https://github.com/josh-W42/live-telemetry-viewer/actions/workflows/ci.yml/badge.svg)](https://github.com/josh-W42/live-telemetry-viewer/actions/workflows/ci.yml)
 
 A Go service that streams simulated rocket-engine test-stand telemetry over
 Connect/gRPC, and a React + TypeScript app that plots it live while staying
@@ -22,9 +22,10 @@ main-thread chart that saturates at 85,600 points in 22 seconds.
 
 Open <http://localhost:5173> and it streams.
 
-- **Chart** — four channels on a shared time axis, two y-axes because psi/K and
-  g/(kg·s⁻¹) differ by orders of magnitude. Scroll to zoom, drag to pan; zooming
-  while live pins the window, which is the same state as paused.
+- **Chart** — four channels on a shared time axis, each with its own y-axis at a
+  fixed range, tinted to match its trace. Hiding a channel can therefore never
+  rescale another. Scroll to zoom, drag to pan; zooming while live pins the
+  window, which is the same state as paused.
 - **Status bar** — connection, points held, points rendered, render fps,
   renders/s, dropped batches, heap. Each carries a tooltip explaining what it
   means. Watching *points held* climb to 2.4M while *points rendered* stays put

@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/josh-W42/sift/server/internal/sim"
+	"github.com/josh-W42/live-telemetry-viewer/server/internal/sim"
 )
 
 func observedExtremes(t *testing.T, s *sim.Simulator, loops int64) map[string][2]float64 {

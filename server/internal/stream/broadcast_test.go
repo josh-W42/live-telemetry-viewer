@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	telemetryv1 "github.com/josh-W42/sift/server/gen/telemetry/v1"
-	"github.com/josh-W42/sift/server/internal/stream"
+	telemetryv1 "github.com/josh-W42/live-telemetry-viewer/server/gen/telemetry/v1"
+	"github.com/josh-W42/live-telemetry-viewer/server/internal/stream"
 )
 
 // sample builds a minimal one-sample payload for the named channels.

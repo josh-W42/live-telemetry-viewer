@@ -4,7 +4,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	telemetryv1 "github.com/josh-W42/sift/server/gen/telemetry/v1"
+	telemetryv1 "github.com/josh-W42/live-telemetry-viewer/server/gen/telemetry/v1"
 )
 
 // DefaultBufferDepth is how many batches a subscriber may fall behind before
