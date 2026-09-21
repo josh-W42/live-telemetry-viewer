@@ -821,6 +821,58 @@ across consecutive samples *with an idle main thread* marks the run `invalid`. A
 frozen renderer also paints nothing, but it is never idle while doing so — that is what
 distinguishes the two, and there is a test for each case.
 
+## What deploying taught us about the stack choices
+
+Three findings from checking Render before committing to it, all of which
+shaped the deployment and one of which is a genuine talking point.
+
+**The proxy speaks HTTP/1.1 to the service, not HTTP/2.** Open feature request
+since December 2023, no official response. Native gRPC over HTTP/2 does not work
+on an externally reachable Render web service, and people hit
+`Unexpected HTTP/1.x request` trying.
+
+*It does not affect this app, and the reason is the interesting part.*
+`connect-web` speaks the Connect protocol, whose server-streaming runs over
+plain HTTP/1.1 chunked transfer. That is precisely why SPEC.md chose Connect
+over grpc-web at M0 — "browsers can consume server streams without a proxy" —
+and the choice paid off on a constraint nobody was thinking about at the time.
+Only bidirectional streaming would need HTTP/2, and there is none here. The
+`h2c` handler is now harmless rather than load-bearing, and carries a comment
+saying so, or someone will eventually "fix" it.
+
+**A hard 100-minute maximum request duration.** Render markets it for
+long-running LLM calls. A telemetry stream is therefore cut every 100 minutes,
+which is not a failure but the expected end of a long session. The client
+reconnects quietly rather than showing an error, bounded at three consecutive
+attempts — an abandoned tab reconnecting forever is exactly the egress the
+subscriber cap exists to bound.
+
+**Response buffering: evidence, not proof.** Render actively markets SSE and
+token streaming on web services and documents no buffering control, and the one
+concrete complaint found is about *static site rewrites* — which is the shape a
+split deployment takes there, and a third unplanned argument for single origin.
+But a buffering proxy would make this app useless: the chart would advance in
+clumps rather than scroll. So the deployment goes to the free tier first purely
+to answer that, and only then pays. If it buffers, the same image goes to Fly
+unchanged, which is why there is a Dockerfile rather than a platform buildpack.
+
+### Two bugs the deployment work surfaced
+
+**Gzip advertised the wrong length.** The middleware deleted `Content-Length`
+before calling the handler — but `http.FileServer` sets it *while* serving, so
+the delete was simply overwritten and every response would have claimed the
+uncompressed size while carrying compressed bytes. Caught by a test written for
+exactly that, and fixed by dropping the header in `WriteHeader`, at the moment
+the handler commits.
+
+**An explicitly empty setting is not the same as an unset one.** `render.yaml`
+declares `ALLOWED_ORIGIN: ""` to mean "single origin, skip CORS", but the config
+reader treated blank as unset and substituted the development default. The
+container logged `cors="http://localhost:5173"` while its configuration said
+otherwise. No unit test would have found this: each decision was reasonable
+alone, and only running the image showed them disagreeing. It is the argument
+for building and running the container locally before deploying it.
+
 ## Measurement conditions, stated honestly
 
 - Both runs were visible throughout (`visibilityLost: false`) and neither was polled while

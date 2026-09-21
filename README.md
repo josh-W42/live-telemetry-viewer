@@ -43,7 +43,14 @@ Open <http://localhost:5173> and it streams.
 **An idle or hidden page holds no subscription.** Disconnect, or switch tabs,
 and the server's subscriber count returns to zero — a page that keeps a stream
 open while discarding every batch costs the server 4,000 samples a second for
-nothing.
+nothing. With nobody subscribed the simulator stops generating entirely, and
+resumes exactly in phase, because it is a pure function of the sample index.
+
+**A new visitor sees the test sequence from the beginning.** Arriving at an
+idle rig restarts the run at idle, so you watch it chill down and ignite rather
+than landing at a random point in a 72-second loop. Tabbing away and back
+resumes instead — the client says which it is, because tearing the stream down
+makes both look identical to the server.
 
 ## Layout
 
@@ -88,6 +95,37 @@ just gen-check  # fail if committed codegen is stale
 
 Run `just server` and `just web` in two shells, then open
 <http://localhost:5173>.
+
+## Deployment
+
+One container serves the app and the API from a single origin. `docker build`
+compiles the web bundle, embeds it in a static Go binary, and runs it on
+distroless — a 13 MB image, non-root, no shell.
+
+```bash
+docker build -t telemetry .
+```
+
+```bash
+docker run --rm -p 8080:8080 -e ALLOWED_ORIGIN= telemetry
+```
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PORT` | `8080` | Injected by most platforms |
+| `ALLOWED_ORIGIN` | `http://localhost:5173` | **Empty disables CORS entirely** |
+| `MAX_SUBSCRIBERS` | `25` | Concurrent streams; `0` is unlimited |
+
+**Why one origin rather than a static host plus an API.** A CDN-instant page
+that then sits on "connecting" while a backend wakes reads as *broken*; one
+page that takes a moment and then works reads as *slow*. Same wait, very
+different impression. It also removes CORS from the deployment: the browser
+never makes a cross-origin request, so there is no preflight and no origin to
+configure at either end.
+
+`render.yaml` describes the service, so the deployment is reviewable in the
+repo rather than clicked into a dashboard. The image is deliberately portable —
+nothing in it is platform-specific.
 
 ## Notes on the setup
 
