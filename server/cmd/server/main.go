@@ -25,7 +25,7 @@ func main() {
 	seed := flag.Int64("seed", 1, "simulator seed, for reproducible runs")
 	batchInterval := flag.Duration("batch-interval", 50*time.Millisecond, "how often to flush a batch")
 	allowedOrigin := flag.String("allowed-origin",
-		config.String("ALLOWED_ORIGIN", "http://localhost:5173"),
+		config.StringAllowEmpty("ALLOWED_ORIGIN", "http://localhost:5173"),
 		"CORS origin for a cross-origin dev client; empty disables CORS entirely")
 	maxSubs := flag.Int("max-subscribers",
 		config.Int("MAX_SUBSCRIBERS", 25),

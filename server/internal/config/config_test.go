@@ -85,3 +85,44 @@ func TestIntKeepsAnExplicitZero(t *testing.T) {
 		t.Errorf("got %d; an explicit 0 means unlimited and must not fall back", got)
 	}
 }
+
+/*
+Found by running the container, not by a test.
+
+render.yaml declares ALLOWED_ORIGIN as "" to mean "single origin, skip CORS".
+Read through String, blank counts as unset and that silently became the
+development default - so the deployed service would have carried a localhost
+CORS policy while its config said otherwise.
+*/
+func TestStringAllowEmptyKeepsAnExplicitEmptyValue(t *testing.T) {
+	t.Setenv("ALLOWED_ORIGIN", "")
+
+	if got := config.StringAllowEmpty("ALLOWED_ORIGIN", "http://localhost:5173"); got != "" {
+		t.Errorf("got %q; an explicitly empty origin means CORS off, not the default", got)
+	}
+}
+
+func TestStringAllowEmptyStillFallsBackWhenAbsent(t *testing.T) {
+	// No Setenv at all: the variable does not exist.
+	if got := config.StringAllowEmpty("ORIGIN_NOT_SET_ANYWHERE", "fallback"); got != "fallback" {
+		t.Errorf("got %q, want the fallback for a genuinely absent variable", got)
+	}
+}
+
+func TestStringAllowEmptyTrims(t *testing.T) {
+	t.Setenv("ALLOWED_ORIGIN", "  https://example.test  ")
+
+	if got := config.StringAllowEmpty("ALLOWED_ORIGIN", "fb"); got != "https://example.test" {
+		t.Errorf("got %q", got)
+	}
+}
+
+// The contrast that makes the pair worth having: PORT has no meaningful empty
+// value, so blank there still means unset.
+func TestStringStillTreatsBlankAsUnset(t *testing.T) {
+	t.Setenv("PORT", "")
+
+	if got := config.String("PORT", "8080"); got != "8080" {
+		t.Errorf("got %q, want the fallback", got)
+	}
+}

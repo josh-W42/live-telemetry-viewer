@@ -25,6 +25,23 @@ func String(key, fallback string) string {
 	return fallback
 }
 
+// StringAllowEmpty is String for a setting where empty is itself a value.
+//
+// ALLOWED_ORIGIN is the case that needs it: empty means "no cross-origin
+// client, skip CORS entirely", and blank-means-unset would silently turn that
+// back into the development default. Set-but-empty is honoured here; only a
+// genuinely absent variable falls back.
+//
+// This mirrors Int keeping an explicit 0, which means "unlimited" rather than
+// "unset" for the subscriber cap.
+func StringAllowEmpty(key, fallback string) string {
+	v, ok := os.LookupEnv(key)
+	if !ok {
+		return fallback
+	}
+	return strings.TrimSpace(v)
+}
+
 // Int is String for whole numbers.
 //
 // A malformed value falls back rather than failing the boot: a service that
