@@ -21,6 +21,7 @@ solves it.
 | Packaging | Multi-stage Dockerfile, distroless runtime, assets embedded in the binary. |
 | Config | Environment variables, with the existing flags as defaults. |
 | Verification | Free tier first, to test streaming. Upgrade only once it is proven. |
+| Idle behaviour | Pump generates nothing with no subscribers; a new visitor restarts the sequence. |
 
 ### Why single origin rather than a static host plus an API
 
@@ -119,8 +120,8 @@ The client's connection state already carries a message, so it surfaces with no 
 not. On an always-on instance that is a core doing nothing useful indefinitely.
 
 It cannot simply skip, because `flush` publishes `Range(p.next, target)` — skipping without
-advancing would make it generate the entire idle period in one batch on resumption. It must
-**advance the cursor without generating**:
+advancing would make it generate the entire idle period in one batch the moment someone
+connected. It must **advance the cursor without generating**:
 
 ```go
 if p.bus.SubscriberCount() == 0 {
@@ -131,6 +132,81 @@ if p.bus.SubscriberCount() == 0 {
 
 Correct precisely because the simulator is pure: phase comes from the sample index, which comes
 from the epoch, not from having run. The third time that purity has paid off.
+
+### 6b. A new visitor gets a fresh test sequence
+
+Idling exposes a product question that the deployment makes urgent.
+
+The sequence runs on the wall clock, so a visitor lands at a random point in an 85-second loop:
+idle 10s, chill-down 15s, ignition 5s, steady 45s, shutdown 10s. Idle and chill-down are 25 of
+those 85 seconds and both are near-flat lines close to zero. **About 29% of cold visitors
+arrive at a chart that looks broken**, and one landing at the start of idle waits 25 seconds
+for anything to happen. For a link whose whole job is an impression in ten seconds, that is a
+worse problem than the wasted CPU — and the same code fixes both.
+
+So: when the pump is idle and a visitor arrives, the test sequence starts again from idle, and
+they watch it run.
+
+**Only the 0 → 1 transition resets.** Later subscribers join the run in progress. Resetting for
+every arrival would snap an existing viewer from steady state back to idle because a stranger
+opened the page.
+
+#### Telling a new visitor from a returning one
+
+Tabbing away is what makes the count reach zero — the client tears the stream down on a hidden
+tab, deliberately. So a returning viewer and a brand-new visitor produce an identical 0 → 1 and
+the server cannot distinguish them. Without help, tabbing away and back would restart the run,
+and so would every 100-minute reconnect.
+
+A timing heuristic was considered and rejected. Instead the client says which it is, because it
+is the only party that knows:
+
+```proto
+// True on a page's first connection, false when reconnecting after a tab
+// switch or a dropped stream. The server starts a fresh test sequence only for
+// a new arrival, so tabbing away and back resumes the run in progress.
+bool new_session = 2;
+```
+
+| Situation | Count | `new_session` | Result |
+|---|---|---|---|
+| Cold visitor, nobody watching | 0 → 1 | true | Fresh run from idle |
+| Returning from a tab switch | 0 → 1 | false | Resumes the wall clock |
+| Someone joins an existing viewer | 1 → 2 | either | Joins the run, no reset |
+| Reconnect after the 100-minute cut | 0 → 1 | false | Resumes |
+
+The cost is that a policy decision lives on the client, and a client could lie. Harmless here:
+the worst a liar achieves is restarting a sequence they are the only viewer of.
+
+#### Mechanism
+
+Restarting is not just `p.next = 0`. `sim.Range` stamps each sample `EpochNs + index x period`,
+so rewinding the index against the boot epoch would emit timestamps from hours ago — and the
+client plots against `Date.now()`, so the chart would show nothing at all.
+
+The restart therefore builds a **fresh simulator with a new epoch**:
+
+```go
+p.sim = sim.New(sim.Config{Seed: p.seed, RateHz: p.rate, EpochNs: nowNs})
+p.next = 0
+```
+
+A new value rather than mutation, so there is no race with the `Service`, which holds its own
+reference and only ever calls `Channels()` — epoch-independent, and identical for the same
+seed and rate.
+
+The service decides and the pump acts. Before subscribing:
+
+```go
+if req.Msg.NewSession && s.bus.SubscriberCount() == 0 {
+    s.restart()   // wired to pump.Restart in main
+}
+```
+
+`Restart` sets an atomic flag the pump consumes on its next flush. Checking the count in the
+service rather than the pump keeps "a join mid-run is not a restart" true by construction. The
+check-then-subscribe race is real and benign: two simultaneous cold arrivals both see zero and
+both request a restart, and the pump performs one.
 
 ### 7. Reconnect at the 100-minute cut
 

@@ -534,6 +534,259 @@ git commit -m "Idle the pump when nobody is subscribed"
 
 ---
 
+### Task 6b: Restart the sequence for a new visitor
+
+Idling exposes a product problem. The 85-second loop is idle 10s, chill-down 15s, ignition 5s,
+steady 45s, shutdown 10s — so **about 29% of cold visitors land in the 25 seconds of near-flat
+lines**, and one arriving at the start of idle waits 25 seconds for anything to happen. For a
+link whose job is an impression in ten seconds, that matters more than the wasted CPU.
+
+When the pump is idle and a *new* visitor arrives, the sequence starts again from idle.
+
+**Files:**
+- Modify: `proto/telemetry/v1/telemetry.proto`
+- Modify: `server/internal/stream/pump.go`, `pump_test.go`
+- Modify: `server/internal/stream/service.go`, `service_test.go`
+- Modify: `server/cmd/server/main.go`
+- Modify: `web/src/worker/protocol.ts`, `telemetry.worker.ts`, `web/src/render/worker.ts`
+
+**Step 1: Add the proto field**
+
+In `message StreamTelemetryRequest`, after `channel_ids`:
+
+```proto
+  // True on a page's first connection, false when reconnecting after a tab
+  // switch or a dropped stream.
+  //
+  // Tabbing away tears the stream down, so a returning viewer and a brand-new
+  // visitor produce an identical 0-to-1 subscriber transition and the server
+  // cannot tell them apart. The client is the only party that knows, so it
+  // says. A fresh sequence starts only for a genuine new arrival.
+  bool new_session = 2;
+```
+
+Run: `just gen`, then stage `proto server/gen web/src/gen`.
+
+**Step 2: Write the failing pump tests**
+
+```go
+/*
+Restarting is not just rewinding the index. sim.Range stamps every sample
+EpochNs + index x period, so rewinding against the boot epoch would emit
+timestamps from hours ago — and the client plots against Date.now(), so the
+chart would draw nothing at all. The restart has to move the epoch.
+*/
+func TestRestartBeginsTheSequenceAgainFromNow(t *testing.T) {
+	const hour = int64(time.Hour)
+
+	bus := stream.NewBroadcaster(stream.DefaultBufferDepth)
+	p := stream.NewPump(sim.Config{Seed: 1, RateHz: 1000}, bus, 50*time.Millisecond)
+
+	p.Flush(hour) // an hour of wall clock, nobody watching
+
+	sub, err := bus.Subscribe(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
+
+	p.Restart()
+	p.Flush(hour + int64(50*time.Millisecond))
+
+	batch := <-sub.C()
+
+	if first := batch.Channels[0].TimestampsNs[0]; first < hour {
+		t.Errorf("first sample stamped %d, before the restart at %d; the epoch did not move",
+			first, hour)
+	}
+
+	// Channel 0 is chamber_pressure. At this point on the wall clock the loop
+	// is five seconds into ignition, where pressure is already in the hundreds.
+	// Ambient means the sequence really did start over.
+	if v := batch.Channels[0].Values[0]; v > 50 {
+		t.Errorf("first sample after restart was %.1f psi, want ambient ~14.7", v)
+	}
+}
+
+// Without a restart, a returning viewer picks up wherever the clock is. This is
+// what stops a tab switch cycling the rig.
+func TestResumingWithoutRestartStaysOnTheWallClock(t *testing.T) {
+	const hour = int64(time.Hour)
+
+	bus := stream.NewBroadcaster(stream.DefaultBufferDepth)
+	p := stream.NewPump(sim.Config{Seed: 1, RateHz: 1000}, bus, 50*time.Millisecond)
+
+	p.Flush(hour)
+
+	sub, err := bus.Subscribe(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
+
+	p.Flush(hour + int64(50*time.Millisecond))
+
+	batch := <-sub.C()
+	if v := batch.Channels[0].Values[0]; v < 50 {
+		t.Errorf("resumed at %.1f psi, want the ignition ramp the wall clock is in", v)
+	}
+}
+```
+
+**Step 3: Run to confirm they fail**
+
+Run: `cd server && go test ./internal/stream/ -run "Restart|Resuming" -v`
+
+Expected: compile failure — `NewPump` does not take a `sim.Config`, and `Restart` does not
+exist.
+
+**Step 4: Implement in the pump**
+
+`NewPump` now takes the config and builds its own simulator, because a restart means building
+another one:
+
+```go
+type Pump struct {
+	cfg      sim.Config
+	sim      *sim.Simulator
+	bus      *Broadcaster
+	interval time.Duration
+
+	next    int64
+	restart atomic.Bool
+}
+
+// NewPump returns a Pump that flushes a batch every interval.
+//
+// It takes the simulator's config rather than a simulator, because restarting
+// the sequence means building a new one with a later epoch.
+func NewPump(cfg sim.Config, bus *Broadcaster, interval time.Duration) *Pump {
+	if interval <= 0 {
+		interval = 50 * time.Millisecond
+	}
+	return &Pump{cfg: cfg, sim: sim.New(cfg), bus: bus, interval: interval}
+}
+
+// Restart asks for the test sequence to begin again at the next flush.
+//
+// Called when a new visitor arrives to an idle rig, so they watch the sequence
+// from idle rather than landing at a random point in it.
+func (p *Pump) Restart() { p.restart.Store(true) }
+```
+
+And in `Flush`, before anything else:
+
+```go
+func (p *Pump) Flush(nowNs int64) {
+	if p.restart.Swap(false) {
+		// A new value rather than mutating the old one, so nothing races with
+		// the Service's own reference. Channels() is epoch-independent, so the
+		// two agree on metadata regardless.
+		p.sim = sim.New(sim.Config{Seed: p.cfg.Seed, RateHz: p.cfg.RateHz, EpochNs: nowNs})
+		p.next = 0
+	}
+
+	target := p.sim.IndexAt(nowNs)
+	// ... the rest as Task 6 left it
+}
+```
+
+**Step 5: Update Task 6's tests**
+
+They construct `NewPump(s, bus, ...)` with a simulator. Change them to pass
+`sim.Config{Seed: 1, RateHz: 1000}`. Behaviour is unchanged.
+
+**Step 6: Wire the service**
+
+`stream.New` gains a callback:
+
+```go
+// New returns a Service. onNewSession is called when a new visitor connects to
+// an idle server; nil disables the behaviour.
+func New(s *sim.Simulator, bus *Broadcaster, onNewSession func()) *Service
+```
+
+In `StreamTelemetry`, before subscribing:
+
+```go
+	// Checked here rather than in the pump so that "a join mid-run is not a
+	// restart" is true by construction. The check-then-subscribe race is real
+	// and benign: two simultaneous cold arrivals both see zero, both ask, and
+	// the pump restarts once.
+	if req.Msg.NewSession && s.onNewSession != nil && s.bus.SubscriberCount() == 0 {
+		s.onNewSession()
+	}
+```
+
+**Step 7: Write the service test**
+
+Against the existing service-test helpers, assert all three cases:
+
+- a new visitor to an idle server calls `onNewSession` once
+- a new visitor arriving while someone is already subscribed does **not**
+- a reconnect (`new_session: false`) never does, whatever the count
+
+**Step 8: Wire main**
+
+```go
+	pump := stream.NewPump(simCfg, bus, *batchInterval)
+	svc := stream.New(simulator, bus, pump.Restart)
+```
+
+`simulator` stays for `ListChannels`; the pump owns its own. Both come from the same config,
+so their channel metadata is identical.
+
+**Step 9: The client says which it is**
+
+`web/src/worker/protocol.ts` — add `newSession: boolean` to `StartRequest`.
+
+`web/src/render/worker.ts` — a **module-scoped** flag, so it survives renderer instances
+within one page load but resets on reload:
+
+```ts
+/**
+ * Whether this page load has yet opened a stream.
+ *
+ * Module scope, not instance: a mode switch builds a new renderer, and that is
+ * not a new visitor. Only a page load is.
+ */
+let firstConnectionOfThisPage = true;
+```
+
+In `setActive(true)`, send `newSession: firstConnectionOfThisPage`, then set it false.
+
+`web/src/worker/telemetry.worker.ts` — pass it through:
+
+```ts
+const stream = client.streamTelemetry(
+  { channelIds, newSession },
+  { signal: controller.signal },
+);
+```
+
+**Step 10: Verify by hand**
+
+Run `just server` and `just web`.
+
+1. Load the page. Expected: the sequence starts at idle — flat lines, then chill-down, then
+   ignition about 25 seconds in.
+2. Tab away for a minute, tab back. Expected: it resumes mid-sequence. **It must not restart
+   at idle** — that is the whole point of the flag.
+3. Reload the page. Expected: starts at idle again.
+4. Open a second tab while the first is streaming. Expected: the second joins the run in
+   progress, and the first does not jump back to idle.
+
+**Step 11: Run everything and commit**
+
+Run: `just test && just lint && just gen-check`
+
+```bash
+git add proto server web
+git commit -m "Start a fresh test sequence for a new visitor, not for a returning one"
+```
+
+---
+
 ### Task 7: Serve the web app from the binary
 
 **Files:**
