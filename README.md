@@ -20,7 +20,19 @@ main-thread chart that saturates at 85,600 points in 22 seconds.
 
 ## The app
 
-Open <http://localhost:5173> and it streams.
+Two ways to run it, on two different ports — worth getting straight before you
+go looking for it on the wrong one:
+
+| How | URL | What is serving the page |
+|---|---|---|
+| `just server` + `just web` | <http://localhost:5173> | Vite, calling the Go API on :8080 |
+| `docker run ... -p 8080:8080` | <http://localhost:8080> | the Go binary, serving page and API together |
+
+There is no Vite in the container. That is the point of the single-origin
+design: the deployed binary serves the app itself, so :5173 does not exist
+there.
+
+Either way, it streams as soon as it loads.
 
 - **Chart** — four channels on a shared time axis, each with its own y-axis at a
   fixed range, tinted to match its trace. Hiding a channel can therefore never
@@ -109,6 +121,9 @@ docker build -t telemetry .
 ```bash
 docker run --rm -p 8080:8080 -e ALLOWED_ORIGIN= telemetry
 ```
+
+Then open **<http://localhost:8080>** — not :5173, which is the Vite dev server
+and is not running inside the container.
 
 | Variable | Default | Meaning |
 |---|---|---|
