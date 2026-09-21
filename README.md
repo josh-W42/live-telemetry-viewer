@@ -1,6 +1,6 @@
 # Live Telemetry Viewer
 
-[![CI](https://github.com/josh-W42/live-telemetry-viewer/actions/workflows/ci.yml/badge.svg)](https://github.com/josh-W42/live-telemetry-viewer/actions/workflows/ci.yml)
+[![CI](https://github.com/josh-W42/Live-Telemetry-Viewer/actions/workflows/ci.yml/badge.svg)](https://github.com/josh-W42/Live-Telemetry-Viewer/actions/workflows/ci.yml)
 
 A Go service that streams simulated rocket-engine test-stand telemetry over
 Connect/gRPC, and a React + TypeScript app that plots it live while staying
