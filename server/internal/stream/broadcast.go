@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 
@@ -25,22 +26,40 @@ const DefaultBufferDepth = 8
 // sequence number assigned here, which is what lets a client detect exactly
 // that.
 type Broadcaster struct {
-	depth int
+	depth   int
+	maxSubs int
 
 	mu   sync.Mutex
 	subs map[*Subscription]struct{}
 	seq  uint64
 }
 
-// NewBroadcaster returns a Broadcaster whose subscribers buffer depth batches.
-// A depth below 1 falls back to DefaultBufferDepth.
+// ErrTooManySubscribers is returned by Subscribe when the broadcaster is full.
+var ErrTooManySubscribers = errors.New("too many subscribers")
+
+// NewBroadcaster returns an uncapped Broadcaster whose subscribers buffer
+// depth batches. A depth below 1 falls back to DefaultBufferDepth.
 func NewBroadcaster(depth int) *Broadcaster {
+	return NewBroadcasterWithLimit(depth, 0)
+}
+
+// NewBroadcasterWithLimit is NewBroadcaster with a ceiling on concurrent
+// subscribers. A maxSubs of 0 means unlimited.
+//
+// The deployed endpoint is unauthenticated and streams roughly 68 KiB/s per
+// subscriber - about 5.9 GB a day each. Without a ceiling, any visitor decides
+// the egress bill.
+func NewBroadcasterWithLimit(depth, maxSubs int) *Broadcaster {
 	if depth < 1 {
 		depth = DefaultBufferDepth
 	}
+	if maxSubs < 0 {
+		maxSubs = 0
+	}
 	return &Broadcaster{
-		depth: depth,
-		subs:  make(map[*Subscription]struct{}),
+		depth:   depth,
+		maxSubs: maxSubs,
+		subs:    make(map[*Subscription]struct{}),
 	}
 }
 
@@ -71,9 +90,13 @@ func (s *Subscription) Close() {
 	})
 }
 
-// Subscribe registers a subscriber. An empty or nil channelIDs means all
-// channels.
-func (b *Broadcaster) Subscribe(channelIDs []string) *Subscription {
+// Subscribe registers a subscriber, or returns ErrTooManySubscribers when the
+// broadcaster is at capacity. An empty or nil channelIDs means all channels.
+//
+// One door rather than a separate capped variant: two ways to subscribe means
+// a later caller can reach for the uncapped one without noticing, which is
+// exactly the mistake the ceiling exists to prevent.
+func (b *Broadcaster) Subscribe(channelIDs []string) (*Subscription, error) {
 	var filter map[string]struct{}
 	if len(channelIDs) > 0 {
 		filter = make(map[string]struct{}, len(channelIDs))
@@ -89,10 +112,14 @@ func (b *Broadcaster) Subscribe(channelIDs []string) *Subscription {
 	}
 
 	b.mu.Lock()
-	b.subs[sub] = struct{}{}
-	b.mu.Unlock()
+	defer b.mu.Unlock()
 
-	return sub
+	if b.maxSubs > 0 && len(b.subs) >= b.maxSubs {
+		return nil, ErrTooManySubscribers
+	}
+	b.subs[sub] = struct{}{}
+
+	return sub, nil
 }
 
 func (b *Broadcaster) remove(sub *Subscription) {

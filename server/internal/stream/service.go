@@ -57,7 +57,12 @@ func (s *Service) StreamTelemetry(
 	req *connect.Request[telemetryv1.StreamTelemetryRequest],
 	out *connect.ServerStream[telemetryv1.TelemetryBatch],
 ) error {
-	sub := s.bus.Subscribe(req.Msg.ChannelIds)
+	sub, err := s.bus.Subscribe(req.Msg.ChannelIds)
+	if err != nil {
+		// ResourceExhausted rather than Unavailable: the server is healthy,
+		// it is this request that cannot be served right now.
+		return connect.NewError(connect.CodeResourceExhausted, err)
+	}
 	defer sub.Close()
 
 	log.Printf("stream: subscriber connected (channels=%v, total=%d)",

@@ -1,6 +1,7 @@
 package stream_test
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -8,6 +9,18 @@ import (
 	telemetryv1 "github.com/josh-W42/live-telemetry-viewer/server/gen/telemetry/v1"
 	"github.com/josh-W42/live-telemetry-viewer/server/internal/stream"
 )
+
+// mustSubscribe fails the test rather than making every call site handle an
+// error that only the cap can produce.
+func mustSubscribe(t *testing.T, b *stream.Broadcaster, channelIDs []string) *stream.Subscription {
+	t.Helper()
+
+	sub, err := b.Subscribe(channelIDs)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	return sub
+}
 
 // sample builds a minimal one-sample payload for the named channels.
 func sample(channelIDs ...string) []*telemetryv1.ChannelSamples {
@@ -35,10 +48,10 @@ func TestSlowSubscriberDoesNotBlockOthers(t *testing.T) {
 	b := stream.NewBroadcaster(depth)
 
 	// Never read from this one. Its buffer fills immediately.
-	slow := b.Subscribe(nil)
+	slow := mustSubscribe(t, b, nil)
 	defer slow.Close()
 
-	fast := b.Subscribe(nil)
+	fast := mustSubscribe(t, b, nil)
 	defer fast.Close()
 
 	// Publish and read in lockstep. An unpaced publisher would outrun any
@@ -89,7 +102,7 @@ func TestDropOldestKeepsTheNewestBatches(t *testing.T) {
 	const depth = 4
 	b := stream.NewBroadcaster(depth)
 
-	sub := b.Subscribe(nil)
+	sub := mustSubscribe(t, b, nil)
 	defer sub.Close()
 
 	const published = 20
@@ -121,7 +134,7 @@ func TestDropCountIsExactlyOnePerLostBatch(t *testing.T) {
 	const published = 20
 
 	b := stream.NewBroadcaster(depth)
-	sub := b.Subscribe(nil)
+	sub := mustSubscribe(t, b, nil)
 	defer sub.Close()
 
 	for i := 0; i < published; i++ {
@@ -137,9 +150,9 @@ func TestDropCountIsExactlyOnePerLostBatch(t *testing.T) {
 func TestDroppedSubscriberSeesSequenceGapsAndHealthyOneDoesNot(t *testing.T) {
 	b := stream.NewBroadcaster(4)
 
-	slow := b.Subscribe(nil)
+	slow := mustSubscribe(t, b, nil)
 	defer slow.Close()
-	fast := b.Subscribe(nil)
+	fast := mustSubscribe(t, b, nil)
 	defer fast.Close()
 
 	// Lockstep again, so the healthy subscriber never overflows.
@@ -180,7 +193,7 @@ func TestDroppedSubscriberSeesSequenceGapsAndHealthyOneDoesNot(t *testing.T) {
 func TestFanOutDeliversTheSameSequenceToEverySubscriber(t *testing.T) {
 	b := stream.NewBroadcaster(8)
 
-	subs := []*stream.Subscription{b.Subscribe(nil), b.Subscribe(nil), b.Subscribe(nil)}
+	subs := []*stream.Subscription{mustSubscribe(t, b, nil), mustSubscribe(t, b, nil), mustSubscribe(t, b, nil)}
 	for _, s := range subs {
 		defer s.Close()
 	}
@@ -217,7 +230,7 @@ func TestPublishReturnsTheAssignedSequence(t *testing.T) {
 func TestSubscriptionFiltersToRequestedChannels(t *testing.T) {
 	b := stream.NewBroadcaster(4)
 
-	sub := b.Subscribe([]string{"vibration", "fuel_flow"})
+	sub := mustSubscribe(t, b, []string{"vibration", "fuel_flow"})
 	defer sub.Close()
 
 	b.Publish(allChannels())
@@ -238,7 +251,7 @@ func TestSubscriptionFiltersToRequestedChannels(t *testing.T) {
 func TestEmptyFilterMeansAllChannels(t *testing.T) {
 	b := stream.NewBroadcaster(4)
 
-	for _, sub := range []*stream.Subscription{b.Subscribe(nil), b.Subscribe([]string{})} {
+	for _, sub := range []*stream.Subscription{mustSubscribe(t, b, nil), mustSubscribe(t, b, []string{})} {
 		b.Publish(allChannels())
 		batch := <-sub.C()
 		if len(batch.Channels) != 4 {
@@ -250,7 +263,7 @@ func TestEmptyFilterMeansAllChannels(t *testing.T) {
 
 func TestUnknownChannelFilterYieldsNoChannels(t *testing.T) {
 	b := stream.NewBroadcaster(4)
-	sub := b.Subscribe([]string{"no_such_channel"})
+	sub := mustSubscribe(t, b, []string{"no_such_channel"})
 	defer sub.Close()
 
 	b.Publish(allChannels())
@@ -266,7 +279,7 @@ func TestUnknownChannelFilterYieldsNoChannels(t *testing.T) {
 func TestCloseRemovesSubscriberAndClosesChannel(t *testing.T) {
 	b := stream.NewBroadcaster(4)
 
-	sub := b.Subscribe(nil)
+	sub := mustSubscribe(t, b, nil)
 	if got := b.SubscriberCount(); got != 1 {
 		t.Fatalf("subscriber count %d, want 1", got)
 	}
@@ -286,7 +299,7 @@ func TestCloseRemovesSubscriberAndClosesChannel(t *testing.T) {
 
 func TestCloseIsIdempotent(t *testing.T) {
 	b := stream.NewBroadcaster(4)
-	sub := b.Subscribe(nil)
+	sub := mustSubscribe(t, b, nil)
 
 	sub.Close()
 	sub.Close() // must not panic on a double close
@@ -317,7 +330,12 @@ func TestConcurrentPublishAndSubscribe(t *testing.T) {
 		subWg.Add(1)
 		go func() {
 			defer subWg.Done()
-			sub := b.Subscribe(nil)
+			sub, err := b.Subscribe(nil)
+			if err != nil {
+				// t.Fatalf is illegal off the test goroutine.
+				t.Errorf("subscribe: %v", err)
+				return
+			}
 			<-sub.C()
 			sub.Close()
 		}()
@@ -329,5 +347,77 @@ func TestConcurrentPublishAndSubscribe(t *testing.T) {
 
 	if got := b.SubscriberCount(); got != 0 {
 		t.Errorf("subscriber count %d after all closed, want 0", got)
+	}
+}
+
+/*
+The deployed endpoint is unauthenticated and streams roughly 68 KiB/s per
+subscriber - about 5.9 GB a day each. Without a ceiling, any visitor decides
+the egress bill.
+*/
+func TestSubscribeRefusesPastTheCap(t *testing.T) {
+	b := stream.NewBroadcasterWithLimit(stream.DefaultBufferDepth, 2)
+
+	for i := 0; i < 2; i++ {
+		if _, err := b.Subscribe(nil); err != nil {
+			t.Fatalf("subscriber %d refused below the cap: %v", i, err)
+		}
+	}
+
+	_, err := b.Subscribe(nil)
+	if !errors.Is(err, stream.ErrTooManySubscribers) {
+		t.Errorf("got %v, want ErrTooManySubscribers", err)
+	}
+}
+
+// A cap that never released would turn one burst of visitors into a permanent
+// outage.
+func TestClosingASubscriptionFreesItsSlot(t *testing.T) {
+	b := stream.NewBroadcasterWithLimit(stream.DefaultBufferDepth, 1)
+
+	first := mustSubscribe(t, b, nil)
+	if _, err := b.Subscribe(nil); err == nil {
+		t.Fatal("a second subscriber was accepted past a cap of 1")
+	}
+
+	first.Close()
+
+	if _, err := b.Subscribe(nil); err != nil {
+		t.Errorf("slot not released after Close: %v", err)
+	}
+}
+
+// Zero means unlimited, which is what local development and the existing
+// tests rely on.
+func TestZeroLimitMeansUnlimited(t *testing.T) {
+	b := stream.NewBroadcasterWithLimit(stream.DefaultBufferDepth, 0)
+
+	for i := 0; i < 50; i++ {
+		if _, err := b.Subscribe(nil); err != nil {
+			t.Fatalf("subscriber %d refused with no cap set: %v", i, err)
+		}
+	}
+}
+
+func TestNewBroadcasterIsUncapped(t *testing.T) {
+	b := stream.NewBroadcaster(stream.DefaultBufferDepth)
+
+	for i := 0; i < 30; i++ {
+		if _, err := b.Subscribe(nil); err != nil {
+			t.Fatalf("subscriber %d refused by an uncapped broadcaster: %v", i, err)
+		}
+	}
+}
+
+// A refused subscriber must not be half-registered: the count is what the
+// pump reads to decide whether to generate anything at all.
+func TestARefusedSubscriberDoesNotCount(t *testing.T) {
+	b := stream.NewBroadcasterWithLimit(stream.DefaultBufferDepth, 1)
+
+	mustSubscribe(t, b, nil)
+	_, _ = b.Subscribe(nil)
+
+	if got := b.SubscriberCount(); got != 1 {
+		t.Errorf("count is %d after a refusal, want 1", got)
 	}
 }
