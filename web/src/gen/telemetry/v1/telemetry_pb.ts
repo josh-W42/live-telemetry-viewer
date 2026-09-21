@@ -10,7 +10,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file telemetry/v1/telemetry.proto.
  */
 export const file_telemetry_v1_telemetry: GenFile = /*@__PURE__*/
-  fileDesc("Chx0ZWxlbWV0cnkvdjEvdGVsZW1ldHJ5LnByb3RvEgx0ZWxlbWV0cnkudjEiSQoHQ2hhbm5lbBIKCgJpZBgBIAEoCRIMCgRuYW1lGAIgASgJEgwKBHVuaXQYAyABKAkSFgoOc2FtcGxlX3JhdGVfaHoYBCABKAEiFQoTTGlzdENoYW5uZWxzUmVxdWVzdCI/ChRMaXN0Q2hhbm5lbHNSZXNwb25zZRInCghjaGFubmVscxgBIAMoCzIVLnRlbGVtZXRyeS52MS5DaGFubmVsIi0KFlN0cmVhbVRlbGVtZXRyeVJlcXVlc3QSEwoLY2hhbm5lbF9pZHMYASADKAkiSwoOQ2hhbm5lbFNhbXBsZXMSEgoKY2hhbm5lbF9pZBgBIAEoCRIVCg10aW1lc3RhbXBzX25zGAIgAygDEg4KBnZhbHVlcxgDIAMoASJSCg5UZWxlbWV0cnlCYXRjaBIuCghjaGFubmVscxgBIAMoCzIcLnRlbGVtZXRyeS52MS5DaGFubmVsU2FtcGxlcxIQCghzZXF1ZW5jZRgCIAEoBDLGAQoQVGVsZW1ldHJ5U2VydmljZRJXCgxMaXN0Q2hhbm5lbHMSIS50ZWxlbWV0cnkudjEuTGlzdENoYW5uZWxzUmVxdWVzdBoiLnRlbGVtZXRyeS52MS5MaXN0Q2hhbm5lbHNSZXNwb25zZSIAElkKD1N0cmVhbVRlbGVtZXRyeRIkLnRlbGVtZXRyeS52MS5TdHJlYW1UZWxlbWV0cnlSZXF1ZXN0GhwudGVsZW1ldHJ5LnYxLlRlbGVtZXRyeUJhdGNoIgAwAUKxAQoQY29tLnRlbGVtZXRyeS52MUIOVGVsZW1ldHJ5UHJvdG9QAVo8Z2l0aHViLmNvbS9qb3NoLVc0Mi9zaWZ0L3NlcnZlci9nZW4vdGVsZW1ldHJ5L3YxO3RlbGVtZXRyeXYxogIDVFhYqgIMVGVsZW1ldHJ5LlYxygIMVGVsZW1ldHJ5XFYx4gIYVGVsZW1ldHJ5XFYxXEdQQk1ldGFkYXRh6gINVGVsZW1ldHJ5OjpWMWIGcHJvdG8z");
+  fileDesc("Chx0ZWxlbWV0cnkvdjEvdGVsZW1ldHJ5LnByb3RvEgx0ZWxlbWV0cnkudjEicwoHQ2hhbm5lbBIKCgJpZBgBIAEoCRIMCgRuYW1lGAIgASgJEgwKBHVuaXQYAyABKAkSFgoOc2FtcGxlX3JhdGVfaHoYBCABKAESEwoLZGlzcGxheV9taW4YBSABKAESEwoLZGlzcGxheV9tYXgYBiABKAEiFQoTTGlzdENoYW5uZWxzUmVxdWVzdCI/ChRMaXN0Q2hhbm5lbHNSZXNwb25zZRInCghjaGFubmVscxgBIAMoCzIVLnRlbGVtZXRyeS52MS5DaGFubmVsIi0KFlN0cmVhbVRlbGVtZXRyeVJlcXVlc3QSEwoLY2hhbm5lbF9pZHMYASADKAkiSwoOQ2hhbm5lbFNhbXBsZXMSEgoKY2hhbm5lbF9pZBgBIAEoCRIVCg10aW1lc3RhbXBzX25zGAIgAygDEg4KBnZhbHVlcxgDIAMoASJSCg5UZWxlbWV0cnlCYXRjaBIuCghjaGFubmVscxgBIAMoCzIcLnRlbGVtZXRyeS52MS5DaGFubmVsU2FtcGxlcxIQCghzZXF1ZW5jZRgCIAEoBDLGAQoQVGVsZW1ldHJ5U2VydmljZRJXCgxMaXN0Q2hhbm5lbHMSIS50ZWxlbWV0cnkudjEuTGlzdENoYW5uZWxzUmVxdWVzdBoiLnRlbGVtZXRyeS52MS5MaXN0Q2hhbm5lbHNSZXNwb25zZSIAElkKD1N0cmVhbVRlbGVtZXRyeRIkLnRlbGVtZXRyeS52MS5TdHJlYW1UZWxlbWV0cnlSZXF1ZXN0GhwudGVsZW1ldHJ5LnYxLlRlbGVtZXRyeUJhdGNoIgAwAUKxAQoQY29tLnRlbGVtZXRyeS52MUIOVGVsZW1ldHJ5UHJvdG9QAVo8Z2l0aHViLmNvbS9qb3NoLVc0Mi9zaWZ0L3NlcnZlci9nZW4vdGVsZW1ldHJ5L3YxO3RlbGVtZXRyeXYxogIDVFhYqgIMVGVsZW1ldHJ5LlYxygIMVGVsZW1ldHJ5XFYx4gIYVGVsZW1ldHJ5XFYxXEdQQk1ldGFkYXRh6gINVGVsZW1ldHJ5OjpWMWIGcHJvdG8z");
 
 /**
  * Channel describes one sensor on the test stand.
@@ -45,6 +45,21 @@ export type Channel = Message<"telemetry.v1.Channel"> & {
    * @generated from field: double sample_rate_hz = 4;
    */
   sampleRateHz: number;
+
+  /**
+   * Suggested y-axis span for a viewer, wide enough to contain every value this
+   * channel can produce including injected faults. Sent by the server so the
+   * client never has to encode what the simulator can do: a new fault widens
+   * its own axis without anything else being edited.
+   *
+   * @generated from field: double display_min = 5;
+   */
+  displayMin: number;
+
+  /**
+   * @generated from field: double display_max = 6;
+   */
+  displayMax: number;
 };
 
 /**

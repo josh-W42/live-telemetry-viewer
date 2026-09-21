@@ -21,6 +21,12 @@ message Channel {
   string unit = 3;
   // Samples produced per second for this channel.
   double sample_rate_hz = 4;
+  // Suggested y-axis span for a viewer, wide enough to contain every value this
+  // channel can produce including injected faults. Sent by the server so the
+  // client never has to encode what the simulator can do: a new fault widens
+  // its own axis without anything else being edited.
+  double display_min = 5;
+  double display_max = 6;
 }
 
 message ListChannelsRequest {}

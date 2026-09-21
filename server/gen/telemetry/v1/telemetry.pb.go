@@ -31,7 +31,13 @@ type Channel struct {
 	// Unit of the values, e.g. "psi".
 	Unit string `protobuf:"bytes,3,opt,name=unit,proto3" json:"unit,omitempty"`
 	// Samples produced per second for this channel.
-	SampleRateHz  float64 `protobuf:"fixed64,4,opt,name=sample_rate_hz,json=sampleRateHz,proto3" json:"sample_rate_hz,omitempty"`
+	SampleRateHz float64 `protobuf:"fixed64,4,opt,name=sample_rate_hz,json=sampleRateHz,proto3" json:"sample_rate_hz,omitempty"`
+	// Suggested y-axis span for a viewer, wide enough to contain every value this
+	// channel can produce including injected faults. Sent by the server so the
+	// client never has to encode what the simulator can do: a new fault widens
+	// its own axis without anything else being edited.
+	DisplayMin    float64 `protobuf:"fixed64,5,opt,name=display_min,json=displayMin,proto3" json:"display_min,omitempty"`
+	DisplayMax    float64 `protobuf:"fixed64,6,opt,name=display_max,json=displayMax,proto3" json:"display_max,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -90,6 +96,20 @@ func (x *Channel) GetUnit() string {
 func (x *Channel) GetSampleRateHz() float64 {
 	if x != nil {
 		return x.SampleRateHz
+	}
+	return 0
+}
+
+func (x *Channel) GetDisplayMin() float64 {
+	if x != nil {
+		return x.DisplayMin
+	}
+	return 0
+}
+
+func (x *Channel) GetDisplayMax() float64 {
+	if x != nil {
+		return x.DisplayMax
 	}
 	return 0
 }
@@ -342,12 +362,16 @@ var File_telemetry_v1_telemetry_proto protoreflect.FileDescriptor
 
 const file_telemetry_v1_telemetry_proto_rawDesc = "" +
 	"\n" +
-	"\x1ctelemetry/v1/telemetry.proto\x12\ftelemetry.v1\"g\n" +
+	"\x1ctelemetry/v1/telemetry.proto\x12\ftelemetry.v1\"\xa9\x01\n" +
 	"\aChannel\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
 	"\x04unit\x18\x03 \x01(\tR\x04unit\x12$\n" +
-	"\x0esample_rate_hz\x18\x04 \x01(\x01R\fsampleRateHz\"\x15\n" +
+	"\x0esample_rate_hz\x18\x04 \x01(\x01R\fsampleRateHz\x12\x1f\n" +
+	"\vdisplay_min\x18\x05 \x01(\x01R\n" +
+	"displayMin\x12\x1f\n" +
+	"\vdisplay_max\x18\x06 \x01(\x01R\n" +
+	"displayMax\"\x15\n" +
 	"\x13ListChannelsRequest\"I\n" +
 	"\x14ListChannelsResponse\x121\n" +
 	"\bchannels\x18\x01 \x03(\v2\x15.telemetry.v1.ChannelR\bchannels\"9\n" +
