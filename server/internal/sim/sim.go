@@ -17,6 +17,11 @@ type Channel struct {
 	Name         string
 	Unit         string
 	SampleRateHz float64
+
+	// DisplayMin and DisplayMax are the suggested fixed y-axis span for this
+	// channel. See range.go.
+	DisplayMin float64
+	DisplayMax float64
 }
 
 // Samples holds one channel's output over a range of sample indices.
@@ -105,6 +110,9 @@ func New(cfg Config) *Simulator {
 	copy(chans, channelDefs)
 	for i := range chans {
 		chans[i].SampleRateHz = cfg.RateHz
+		r := displayRangeFor(uint64(i))
+		chans[i].DisplayMin = r.min
+		chans[i].DisplayMax = r.max
 	}
 
 	return &Simulator{
@@ -193,20 +201,27 @@ func (s *Simulator) Range(from, to int64) []Samples {
 	return out
 }
 
-// value computes one channel's reading at a sample index.
-func (s *Simulator) value(channel uint64, phaseName string, p float64, loop, index int64, elapsed float64) float64 {
-	var base, sigma float64
-
+// nominal returns a channel's base value and noise sigma before faults, the
+// vibration carrier, or clamping. Split out of value() so the display-range
+// derivation can walk the same functions the generator uses, rather than
+// restating their ranges somewhere that could drift out of step.
+func nominal(channel uint64, phaseName string, p float64) (base, sigma float64) {
 	switch channel {
 	case chPressure:
-		base, sigma = pressure(phaseName, p)
+		return pressure(phaseName, p)
 	case chTemp:
-		base, sigma = temperature(phaseName, p)
+		return temperature(phaseName, p)
 	case chVibration:
-		base, sigma = vibration(phaseName, p)
+		return vibration(phaseName, p)
 	case chFuelFlow:
-		base, sigma = fuelFlow(phaseName, p)
+		return fuelFlow(phaseName, p)
 	}
+	return 0, 0
+}
+
+// value computes one channel's reading at a sample index.
+func (s *Simulator) value(channel uint64, phaseName string, p float64, loop, index int64, elapsed float64) float64 {
+	base, sigma := nominal(channel, phaseName, p)
 
 	// Injected faults ride on the nominal signal. See faults.go.
 	base += s.faultOffset(channel, phaseName, p, loop)
