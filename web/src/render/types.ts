@@ -228,6 +228,71 @@ export function colorFor(channelId: string): string {
   return palette[channelId] ?? "#666";
 }
 
+/** Horizontal room one y-axis needs for its line, ticks and labels. */
+export const AXIS_WIDTH = 56;
+
+/** Colour of an axis whose channel is currently hidden. */
+const AXIS_DIMMED = "#c8c8c8";
+
+/**
+ * Grid insets for the viewer, sized to fit one axis per channel.
+ *
+ * Takes a count rather than a visible set, deliberately. Plot geometry must not
+ * depend on what is on screen: if hiding a channel narrowed the insets, the
+ * plot would widen and every remaining trace would change apparent width and
+ * position — horizontal instability in place of the vertical kind the fixed
+ * axes remove.
+ */
+export function viewerGridInsets(channelCount: number): { left: number; right: number } {
+  const leftCount = Math.ceil(channelCount / 2);
+  return {
+    left: Math.max(AXIS_WIDTH, leftCount * AXIS_WIDTH),
+    right: Math.max(AXIS_WIDTH, (channelCount - leftCount) * AXIS_WIDTH),
+  };
+}
+
+/**
+ * One y-axis per channel, at the fixed range the server declared.
+ *
+ * `visible` affects colour and nothing else. Every channel keeps its axis
+ * whether or not its trace is drawn, because an axis that disappeared would let
+ * the others slide over — and each range comes from the channel metadata rather
+ * than from the data, so it cannot move when a neighbour is hidden. That pair
+ * of properties is exactly what the old shared `scale: true` axes lacked:
+ * unticking fuel flow rescaled vibration, which made a trace change apparent
+ * amplitude without its data changing.
+ */
+export function yAxes(channels: Channel[], visible: string[] | null) {
+  const shown = visible === null ? null : new Set(visible);
+  const leftCount = Math.ceil(channels.length / 2);
+
+  return channels.map((c, index) => {
+    const onLeft = index < leftCount;
+    const lit = shown === null || shown.has(c.id);
+    const color = lit ? colorFor(c.id) : AXIS_DIMMED;
+
+    return {
+      type: "value" as const,
+      position: (onLeft ? "left" : "right") as "left" | "right",
+      // Each axis sits one slot further out than the last on its side.
+      offset: (onLeft ? index : index - leftCount) * AXIS_WIDTH,
+      name: c.unit,
+      min: c.displayMin,
+      max: c.displayMax,
+      nameTextStyle: { color },
+      axisLine: { show: true, lineStyle: { color } },
+      axisLabel: { color },
+      // Four sets of gridlines would be a moiré pattern, so only the first
+      // axis draws them.
+      splitLine: { show: index === 0 },
+    };
+  });
+}
+
+/** Grid insets for the two frozen baseline renderers. */
+export const GRID_LEFT = 64;
+export const GRID_RIGHT = 64;
+
 /**
  * Chart options shared by both naive modes.
  *
@@ -239,7 +304,7 @@ export function colorFor(channelId: string): string {
 export function baseOption(channels: Channel[]) {
   return {
     animation: false,
-    grid: { left: 64, right: 64, top: 28, bottom: 28 },
+    grid: { left: GRID_LEFT, right: GRID_RIGHT, top: 28, bottom: 28 },
     xAxis: { type: "time" as const, axisLabel: { hideOverlap: true } },
     yAxis: [
       { type: "value" as const, scale: true, name: "psi / K" },
@@ -259,6 +324,38 @@ export function baseOption(channels: Channel[]) {
 }
 
 /**
+ * Chart options for the viewer.
+ *
+ * Separate from `baseOption` rather than an edit to it: modes A and B are
+ * frozen references whose numbers are quoted throughout NOTES.md, and changing
+ * what they draw would make those numbers unreproducible.
+ *
+ * No legend, unlike the baselines. The channel checkboxes are the one authority
+ * on visibility, and an ECharts legend is a second one — clicking it hides a
+ * series without the store knowing, leaving the chart and the channel list
+ * disagreeing about what is on screen.
+ */
+export function viewerOption(channels: Channel[]) {
+  const insets = viewerGridInsets(channels.length);
+
+  return {
+    animation: false,
+    grid: { left: insets.left, right: insets.right, top: 28, bottom: 28 },
+    xAxis: { type: "time" as const, axisLabel: { hideOverlap: true } },
+    yAxis: yAxes(channels, null),
+    series: channels.map((c, index) => ({
+      name: c.name,
+      type: "line" as const,
+      showSymbol: false,
+      lineStyle: { width: 1 },
+      itemStyle: { color: colorFor(c.id) },
+      yAxisIndex: index,
+      data: [] as number[][],
+    })),
+  };
+}
+
+/**
  * A user gesture on the chart, expressed relative to whatever is on screen.
  *
  * `factor` below 1 zooms in, above 1 zooms out. `anchorFraction` is where the
@@ -269,15 +366,22 @@ export type ViewGesture =
   | { kind: "zoom"; factor: number; anchorFraction: number }
   | { kind: "pan"; fraction: number };
 
-/** Grid insets from baseOption, needed to map a pixel to a plot fraction. */
-export const GRID_LEFT = 64;
-export const GRID_RIGHT = 64;
-
-/** Where `clientX` falls across the plot area, 0 (left edge) to 1 (right). */
-export function plotFraction(clientX: number, rect: DOMRect): number {
-  const plotWidth = rect.width - GRID_LEFT - GRID_RIGHT;
+/**
+ * Where `clientX` falls across the plot area, 0 (left edge) to 1 (right).
+ *
+ * The insets are passed in rather than read from a module constant: the viewer
+ * and the two baselines have different grids now, and mapping the viewer's
+ * pixels with the baselines' narrower insets would put every zoom anchor
+ * slightly off — a silent drift in the code the zoom-out bug lived in.
+ */
+export function plotFraction(
+  clientX: number,
+  rect: DOMRect,
+  insets: { left: number; right: number },
+): number {
+  const plotWidth = rect.width - insets.left - insets.right;
   if (plotWidth <= 0) return 0.5;
 
-  const f = (clientX - rect.left - GRID_LEFT) / plotWidth;
+  const f = (clientX - rect.left - insets.left) / plotWidth;
   return Math.min(Math.max(f, 0), 1);
 }

@@ -5,12 +5,12 @@ import type { ViewMessage, WorkerMessage, WorkerRequest } from "../worker/protoc
 import type { RenderWindow } from "../store/viewSlice";
 import type { Anomaly } from "../worker/rules";
 import {
-  baseOption,
-  GRID_LEFT,
-  GRID_RIGHT,
   colorFor,
   plotFraction,
   RenderTimer,
+  viewerGridInsets,
+  viewerOption,
+  yAxes,
   type ChartRenderer,
   type ConnectionStatus,
   type RenderStats,
@@ -42,8 +42,18 @@ export class WorkerRenderer implements ChartRenderer {
   private chart: echarts.ECharts | null = null;
   private worker: Worker | null = null;
 
+  private channels: Channel[] = [];
   private channelIds: string[] = [];
   private seriesIndex = new Map<string, number>();
+
+  /**
+   * Grid insets this chart was built with.
+   *
+   * Held rather than imported, because the viewer's grid is wider than the
+   * baselines' now — one axis per channel instead of two shared ones — and the
+   * gesture maths has to map pixels with the insets actually in use.
+   */
+  private insets = { left: 64, right: 64 };
 
   private rafHandle = 0;
   private lastRequestAt = 0;
@@ -85,12 +95,14 @@ export class WorkerRenderer implements ChartRenderer {
     // replace that data with exactly the window selected, so its 0-100% shrinks
     // to the current window and zoom-out can never escape. Gestures are handled
     // here instead and reported relatively.
-    this.chart.setOption(baseOption(channels));
+    this.insets = viewerGridInsets(channels.length);
+    this.chart.setOption(viewerOption(channels));
 
     this.container = el;
     el.addEventListener("wheel", this.onWheel, { passive: false });
     el.addEventListener("pointerdown", this.onPointerDown);
 
+    this.channels = channels;
     this.channelIds = channels.map((c) => c.id);
     this.seriesIndex = new Map(channels.map((c, i) => [c.id, i]));
 
@@ -216,6 +228,13 @@ export class WorkerRenderer implements ChartRenderer {
     this.visible = channelIds;
     if (!this.chart) return;
 
+    // Colour only. Every axis keeps its range, its side and its slot, so
+    // nothing on the chart moves or rescales when a channel goes away — which
+    // is the entire point of the per-channel axes.
+    this.timer.measure(() =>
+      this.chart!.setOption({ yAxis: yAxes(this.channels, this.visible) }),
+    );
+
     // A pinned window is served once, so without this the change would not
     // appear until something else moved the view.
     if (this.active && this.window.kind === "pinned") {
@@ -274,7 +293,11 @@ export class WorkerRenderer implements ChartRenderer {
     this.gestureHandler?.({
       kind: "zoom",
       factor,
-      anchorFraction: plotFraction(e.clientX, this.container.getBoundingClientRect()),
+      anchorFraction: plotFraction(
+        e.clientX,
+        this.container.getBoundingClientRect(),
+        this.insets,
+      ),
     });
   };
 
@@ -292,7 +315,7 @@ export class WorkerRenderer implements ChartRenderer {
     if (!this.container || this.dragLastX === null) return;
 
     const rect = this.container.getBoundingClientRect();
-    const plotWidth = rect.width - GRID_LEFT - GRID_RIGHT;
+    const plotWidth = rect.width - this.insets.left - this.insets.right;
     if (plotWidth <= 0) return;
 
     const dx = e.clientX - this.dragLastX;
@@ -473,6 +496,7 @@ export class WorkerRenderer implements ChartRenderer {
       this.held = 0;
       this.rendered = 0;
       this.inFlight = 0;
+      this.channels = [];
       this.gestureHandler = null;
       this.anomalyHandler = null;
       this.statusHandler = null;
