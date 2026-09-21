@@ -36,7 +36,7 @@ func newTestServer(t *testing.T) (telemetryv1connect.TelemetryServiceClient, *st
 	ctx, cancel := context.WithCancel(context.Background())
 	go stream.NewPump(s, bus, 10*time.Millisecond).Run(ctx)
 
-	srv := httptest.NewServer(stream.NewHTTPHandler(stream.New(s, bus), viteOrigin))
+	srv := httptest.NewServer(stream.NewHTTPHandler(stream.New(s, bus), viteOrigin, nil))
 	t.Cleanup(func() {
 		cancel()
 		srv.Close()

@@ -46,7 +46,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              ":" + *port,
-		Handler:           stream.NewHTTPHandler(stream.New(simulator, bus), *allowedOrigin),
+		Handler:           stream.NewHTTPHandler(stream.New(simulator, bus), *allowedOrigin, nil),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
