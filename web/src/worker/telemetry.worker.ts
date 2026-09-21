@@ -42,7 +42,7 @@ ctx.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const msg = event.data;
   switch (msg.type) {
     case "start":
-      void start(msg.baseUrl, msg.capacity, msg.channelIds);
+      void start(msg.baseUrl, msg.capacity, msg.channelIds, msg.newSession);
       break;
     case "view":
       try {
@@ -87,7 +87,12 @@ function reportStats(): void {
   });
 }
 
-async function start(baseUrl: string, capacity: number, channelIds: string[]): Promise<void> {
+async function start(
+  baseUrl: string,
+  capacity: number,
+  channelIds: string[],
+  newSession: boolean,
+): Promise<void> {
   stop();
 
   const transport = createConnectTransport({ baseUrl });
@@ -136,7 +141,10 @@ async function start(baseUrl: string, capacity: number, channelIds: string[]): P
     controller = new AbortController();
     abort = controller;
 
-    const stream = client.streamTelemetry({ channelIds }, { signal: controller.signal });
+    const stream = client.streamTelemetry(
+      { channelIds, newSession },
+      { signal: controller.signal },
+    );
 
     for await (const batch of stream) {
       droppedBatches += droppedSince(lastSequence, batch.sequence);
@@ -147,6 +155,13 @@ async function start(baseUrl: string, capacity: number, channelIds: string[]): P
         buffers.get(ch.channelId)?.push(ch.timestampsNs, ch.values);
         evaluator.push(ch.channelId, ch.timestampsNs, Float64Array.from(ch.values));
       }
+    }
+
+    // Falling out of the loop without an error means the server closed the
+    // stream. The platform caps a request at 100 minutes, so a long session
+    // ends exactly here. Say so; the main thread decides whether to reconnect.
+    if (!controller.signal.aborted) {
+      ctx.postMessage({ type: "ended" });
     }
   } catch (err) {
     // A cancelled stream is how stopping works, not a failure. Reporting it

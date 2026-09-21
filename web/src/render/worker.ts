@@ -17,6 +17,15 @@ import {
   type ViewGesture,
 } from "./types";
 
+/**
+ * Whether this page load has yet opened a stream.
+ *
+ * Module scope rather than per-instance on purpose: switching render mode
+ * builds a new WorkerRenderer, and that is not a new visitor. Only a page load
+ * is, and a page load is exactly what resets a module.
+ */
+let firstConnectionOfThisPage = true;
+
 /** Ten minutes at 1kHz. Sized once; the worker never grows past it. */
 const CAPACITY = 600_000;
 
@@ -79,6 +88,16 @@ export class WorkerRenderer implements ChartRenderer {
   private statusHandler: ((status: ConnectionStatus) => void) | null = null;
 
   /**
+   * Consecutive reconnects with no successful `ready` in between.
+   *
+   * Bounded deliberately. The platform ends a stream every 100 minutes, and a
+   * tab nobody is looking at would otherwise reconnect for as long as it is
+   * left open - which is exactly the egress the subscriber cap exists to
+   * bound. After a few tries the viewer stops and waits to be asked.
+   */
+  private reconnects = 0;
+
+  /**
    * @param backend ECharts renderer. Canvas is what ships; `svg` exists so the
    * two can be measured against each other on the same harness rather than
    * compared from first principles.
@@ -125,12 +144,15 @@ export class WorkerRenderer implements ChartRenderer {
     this.report(active ? "connecting" : "idle");
 
     if (active) {
+      this.reconnects = 0;
       this.send({
         type: "start",
         baseUrl: this.baseUrl,
         capacity: CAPACITY,
         channelIds: [],
+        newSession: firstConnectionOfThisPage,
       });
+      firstConnectionOfThisPage = false;
 
       // Counters are cheap and independent of rendering, so they keep updating
       // even if a view request fails.
@@ -155,6 +177,37 @@ export class WorkerRenderer implements ChartRenderer {
 
   private report(state: ConnectionStatus["state"], message?: string): void {
     this.statusHandler?.({ state, message });
+  }
+
+  /** How many times to reconnect before waiting to be asked. */
+  private static readonly MAX_RECONNECTS = 3;
+
+  /**
+   * The server closed the stream. Expected, not a failure.
+   *
+   * A deployed request is capped at 100 minutes, so any long session ends
+   * this way. Reconnect quietly - but not forever, or an abandoned tab
+   * streams for as long as it is left open.
+   */
+  private onStreamEnded(): void {
+    if (!this.active) return;
+
+    this.reconnects += 1;
+    if (this.reconnects > WorkerRenderer.MAX_RECONNECTS) {
+      this.report("idle", "session ended — press Connect to resume");
+      return;
+    }
+
+    this.report("reconnecting");
+    this.send({
+      type: "start",
+      baseUrl: this.baseUrl,
+      capacity: CAPACITY,
+      channelIds: [],
+      // A reconnect, not a new visitor: the rig keeps running rather than
+      // starting its test sequence over.
+      newSession: false,
+    });
   }
 
   /** Mode C feeds itself; batches never come through here. */
@@ -384,7 +437,11 @@ export class WorkerRenderer implements ChartRenderer {
   private onMessage(msg: WorkerMessage): void {
     switch (msg.type) {
       case "ready":
+        this.reconnects = 0;
         this.report("streaming");
+        break;
+      case "ended":
+        this.onStreamEnded();
         break;
       case "error":
         console.error("telemetry worker:", msg.message);

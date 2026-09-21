@@ -130,7 +130,12 @@ export interface ChartRenderer {
  * `connecting` covers the unary ListChannels call as well as opening the
  * stream; `streaming` means batches are actually arriving.
  */
-export type ConnectionState = "idle" | "connecting" | "streaming" | "error";
+export type ConnectionState =
+  | "idle"
+  | "connecting"
+  | "streaming"
+  | "reconnecting"
+  | "error";
 
 export interface ConnectionStatus {
   state: ConnectionState;

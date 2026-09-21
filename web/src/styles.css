@@ -189,7 +189,8 @@ button.stat {
   background: var(--ok);
 }
 
-.conn[data-state="connecting"] .conn-dot {
+.conn[data-state="connecting"] .conn-dot,
+.conn[data-state="reconnecting"] .conn-dot {
   background: var(--warn);
 }
 

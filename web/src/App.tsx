@@ -38,7 +38,17 @@ import { StatusBar } from "./components/StatusBar";
 import { ViewControls } from "./components/ViewControls";
 import "./styles.css";
 
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8080";
+/**
+ * Same origin by default: the Go binary serves this page and the API together,
+ * so there is nothing to configure and no CORS. VITE_API_URL stays as an
+ * override for pointing a dev build at a server elsewhere - which is what
+ * web/.env.development does, since Vite serves the page from :5173 while the
+ * API answers on :8080.
+ */
+const API_URL =
+  import.meta.env.VITE_API_URL ??
+  (typeof window === "undefined" ? "http://localhost:8080" : window.location.origin);
+
 
 function makeRenderer(mode: RenderMode): ChartRenderer {
   switch (mode) {

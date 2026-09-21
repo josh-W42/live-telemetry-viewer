@@ -22,6 +22,15 @@ export interface StartRequest {
   capacity: number;
   /** Empty means every channel. */
   channelIds: string[];
+  /**
+   * True on this page's first connection, false on every reconnect after it.
+   *
+   * Tabbing away tears the stream down, so the server sees an identical
+   * 0-to-1 subscriber transition whether a viewer came back or a stranger
+   * arrived. Only the client knows which, so it says: the server restarts the
+   * test sequence for a genuine new arrival, and resumes for a returning one.
+   */
+  newSession: boolean;
 }
 
 /** Ask for a downsampled window. */
@@ -124,4 +133,21 @@ export interface ErrorMessage {
   message: string;
 }
 
-export type WorkerMessage = ReadyMessage | ViewMessage | StatsMessage | ErrorMessage;
+/**
+ * The stream ended without an error.
+ *
+ * Not a failure: the deployment caps a single request at 100 minutes, so a
+ * long session ends this way by design. Reported separately from `error` so
+ * the main thread can reconnect quietly instead of showing a red indicator
+ * for something that was always going to happen.
+ */
+export interface EndedMessage {
+  type: "ended";
+}
+
+export type WorkerMessage =
+  | ReadyMessage
+  | ViewMessage
+  | StatsMessage
+  | ErrorMessage
+  | EndedMessage;
