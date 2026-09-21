@@ -56,11 +56,18 @@ type phase struct {
 	dur  time.Duration
 }
 
-// The test sequence loops forever. Durations are a few tens of seconds each so
-// a viewer sees a full cycle without waiting long.
+// The test sequence loops forever.
+//
+// Idle and chill-down are deliberately short. They are the two phases where
+// every trace sits near zero, so a visitor arriving during them sees a chart
+// that looks broken rather than one that is working. At 10s and 15s they were
+// 25 of an 85-second loop - roughly 29% of cold arrivals, waiting up to 25
+// seconds for ignition. At 4s and 8s they are 12 of 72, about 17%, and the
+// worst case wait is halved. Nothing about the shapes changed: every phase
+// function is parameterised by progress through its phase, not by its length.
 var phases = []phase{
-	{PhaseIdle, 10 * time.Second},
-	{PhaseChillDown, 15 * time.Second},
+	{PhaseIdle, 4 * time.Second},
+	{PhaseChillDown, 8 * time.Second},
 	{PhaseIgnition, 5 * time.Second},
 	{PhaseSteady, 45 * time.Second},
 	{PhaseShutdown, 10 * time.Second},

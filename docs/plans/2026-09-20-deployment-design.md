@@ -137,14 +137,26 @@ from the epoch, not from having run. The third time that purity has paid off.
 
 Idling exposes a product question that the deployment makes urgent.
 
-The sequence runs on the wall clock, so a visitor lands at a random point in an 85-second loop:
-idle 10s, chill-down 15s, ignition 5s, steady 45s, shutdown 10s. Idle and chill-down are 25 of
-those 85 seconds and both are near-flat lines close to zero. **About 29% of cold visitors
-arrive at a chart that looks broken**, and one landing at the start of idle waits 25 seconds
-for anything to happen. For a link whose whole job is an impression in ten seconds, that is a
-worse problem than the wasted CPU — and the same code fixes both.
+The sequence runs on the wall clock, so a visitor lands at a random point in the loop, and its
+opening phases are the ones where every trace sits near zero. At the original durations — idle
+10s and chill-down 15s of an 85-second loop — **about 29% of cold visitors arrived at a chart
+that looked broken**, and one landing at the start of idle waited 25 seconds for anything to
+happen. For a link whose whole job is an impression in ten seconds, that was a worse problem
+than the wasted CPU.
 
-So: when the pump is idle and a visitor arrives, the test sequence starts again from idle, and
+Two independent fixes, both taken:
+
+**Trim the quiet phases.** Idle is now 4s and chill-down 8s, making the loop 72s and the flat
+window 12 of it — about 17% of arrivals, worst case 12 seconds. Nothing about the shapes
+changed, because every phase function is parameterised by progress through its phase rather
+than by its length: the display ranges came out identical, and the rule crossing fractions
+moved only from 0.049–0.196% to 0.058–0.232%, still an order of magnitude inside the 2% bar.
+The one cost is that SPEC.md describes phases as "a few tens of seconds each"; idle and
+chill-down no longer are, in service of the reason that line gives for the durations —
+"so a viewer sees a full cycle without waiting long".
+
+**Restart for a new visitor.** Trimming shrinks the window; restarting removes the randomness
+entirely. When the pump is idle and a visitor arrives, the sequence starts again from idle and
 they watch it run.
 
 **Only the 0 → 1 transition resets.** Later subscribers join the run in progress. Resetting for

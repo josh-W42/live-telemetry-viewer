@@ -536,10 +536,10 @@ git commit -m "Idle the pump when nobody is subscribed"
 
 ### Task 6b: Restart the sequence for a new visitor
 
-Idling exposes a product problem. The 85-second loop is idle 10s, chill-down 15s, ignition 5s,
-steady 45s, shutdown 10s — so **about 29% of cold visitors land in the 25 seconds of near-flat
-lines**, and one arriving at the start of idle waits 25 seconds for anything to happen. For a
-link whose job is an impression in ten seconds, that matters more than the wasted CPU.
+Idling exposes a product problem. A visitor lands at a random point in the loop, and its
+opening phases are the quiet ones. Trimming idle to 4s and chill-down to 8s (already done in
+`sim.go`) shrank the flat window from 25 seconds of 85 to 12 of 72 — from about 29% of cold
+arrivals to 17%. This task removes the randomness that remains.
 
 When the pump is idle and a *new* visitor arrives, the sequence starts again from idle.
 
